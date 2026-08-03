@@ -1,0 +1,10 @@
+.venv/
+.venv-local/
+.env
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+.cursor/
+logs/
+notebooks/
+tmp/
