@@ -241,3 +241,163 @@ class ChatResponse(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )
+
+
+class ChatMessage(SQLModel, table=True):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system', 'tool')",
+            name="ck_chat_messages_role",
+        ),
+        CheckConstraint(
+            "btrim(content) <> ''",
+            name="ck_chat_messages_content_not_blank",
+        ),
+        CheckConstraint(
+            "sequence >= 0",
+            name="ck_chat_messages_sequence_nonnegative",
+        ),
+        UniqueConstraint(
+            "thread_id",
+            "sequence",
+            name="uq_chat_messages_thread_sequence",
+        ),
+    )
+
+    id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            primary_key=True,
+            nullable=False,
+        ),
+    )
+    thread_id: str = Field(
+        sa_column=Column(
+            String(128),
+            ForeignKey("chat_threads.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
+    request_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            ForeignKey("chat_requests.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    role: str = Field(
+        sa_column=Column(String(16), nullable=False),
+    )
+    content: str = Field(
+        sa_column=Column(Text, nullable=False),
+    )
+    sequence: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            "metadata",
+            JSONB,
+            nullable=False,
+            server_default=text("'{}'::jsonb"),
+        ),
+    )
+    created_at: datetime = Field(
+        default_factory=_utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+
+
+class AppErrorLog(SQLModel, table=True):
+    __tablename__ = "app_error_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "level IN ('ERROR', 'CRITICAL')",
+            name="ck_app_error_logs_level",
+        ),
+        CheckConstraint(
+            "btrim(message) <> ''",
+            name="ck_app_error_logs_message_not_blank",
+        ),
+        CheckConstraint(
+            "status_code IS NULL OR (status_code >= 100 AND status_code <= 599)",
+            name="ck_app_error_logs_status_code",
+        ),
+        Index("ix_app_error_logs_created", text("created_at DESC")),
+        Index(
+            "ix_app_error_logs_path_created",
+            "path",
+            text("created_at DESC"),
+        ),
+    )
+
+    id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            primary_key=True,
+            nullable=False,
+        ),
+    )
+    level: str = Field(
+        sa_column=Column(String(16), nullable=False),
+    )
+    message: str = Field(
+        sa_column=Column(Text, nullable=False),
+    )
+    exception_type: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
+    traceback: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    method: str | None = Field(
+        default=None,
+        sa_column=Column(String(16), nullable=True),
+    )
+    path: str | None = Field(
+        default=None,
+        sa_column=Column(String(512), nullable=True),
+    )
+    status_code: int | None = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
+    client_ip: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+    )
+    thread_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+    )
+    request_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+    )
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'{}'::jsonb"),
+        ),
+    )
+    created_at: datetime = Field(
+        default_factory=_utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )

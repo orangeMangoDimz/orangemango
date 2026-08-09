@@ -16,15 +16,17 @@ dependencies = [
     "langchain-openai>=1.0.0",
     "langchain-tavily>=0.2.0",
     "langgraph>=1.2.10",
+    "langgraph-checkpoint-postgres>=3.1.0",
     "langsmith>=0.4.0",
     "mcp>=1.9,<2",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.14.2",
     "pypdf>=6.14.2",
     "python-dotenv>=1.0.0",
-    "psycopg[binary]>=3.2.0",
+    "psycopg[binary,pool]>=3.2.0",
     "sqlmodel>=0.0.39",
     "uvicorn[standard]>=0.35.0",
+    "loguru>=0.7.3",
 ]
 
 [dependency-groups]

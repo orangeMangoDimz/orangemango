@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config.const.chat import MAX_EVENT_HISTORY
 from app.db.models import (
+    ChatMessage as ChatMessageRecord,
     ChatRequest as ChatRequestRecord,
     ChatResponse as ChatResponseRecord,
     ChatThread,
@@ -54,7 +56,7 @@ class ThreadRecord:
 
 
 class ChatRepository:
-    """In-process thread/event persistence for one compiled LangGraph instance."""
+    """Persist chat runs/transcripts and coordinate live in-process events."""
 
     def __init__(
         self,
@@ -108,6 +110,20 @@ class ChatRepository:
                         )
                         session.add(request)
                         await session.flush()
+                        next_sequence = await self._next_message_sequence(
+                            session,
+                            thread_id,
+                        )
+                        session.add(
+                            ChatMessageRecord(
+                                thread_id=thread_id,
+                                request_id=request.id,
+                                role="user",
+                                content=message,
+                                sequence=next_sequence,
+                                created_at=now,
+                            )
+                        )
             except IntegrityError as exc:
                 if "uq_active_chat_request_per_thread" in str(exc):
                     raise ChatRequestBusyError(thread_id) from exc
@@ -122,7 +138,30 @@ class ChatRepository:
 
     async def has_thread(self, thread_id: str) -> bool:
         async with self._lock:
-            return thread_id in self._threads
+            if thread_id in self._threads:
+                return True
+
+        try:
+            async with self._session_factory() as session:
+                return await session.get(ChatThread, thread_id) is not None
+        except SQLAlchemyError as exc:
+            raise ChatPersistenceError("Unable to load chat thread") from exc
+
+    async def history(self, thread_id: str) -> list[dict[str, str]]:
+        """Return the ordered transcript for internal history/replay use."""
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(ChatMessageRecord)
+                    .where(ChatMessageRecord.thread_id == thread_id)
+                    .order_by(ChatMessageRecord.sequence)
+                )
+                return [
+                    {"role": message.role, "content": message.content}
+                    for message in result.scalars().all()
+                ]
+        except SQLAlchemyError as exc:
+            raise ChatPersistenceError("Unable to load chat history") from exc
 
     async def publish(
         self,
@@ -230,6 +269,22 @@ class ChatRepository:
                         )
                     )
 
+                    if content and content.strip():
+                        next_sequence = await self._next_message_sequence(
+                            session,
+                            request.thread_id,
+                        )
+                        session.add(
+                            ChatMessageRecord(
+                                thread_id=request.thread_id,
+                                request_id=request_id,
+                                role="assistant",
+                                content=content,
+                                sequence=next_sequence,
+                                created_at=now,
+                            )
+                        )
+
                     thread = await session.get(ChatThread, request.thread_id)
                     if thread is not None:
                         thread.updated_at = now
@@ -248,30 +303,59 @@ class ChatRepository:
     ) -> AsyncIterator[ChatEvent]:
         async with self._lock:
             record = self._threads.get(thread_id)
-            if record is None:
+            if record is not None:
+                replay = [
+                    event
+                    for event in record.events
+                    if last_event_id is None or event.event_id > last_event_id
+                ]
+                queue: asyncio.Queue[ChatEvent] = asyncio.Queue()
+                record.subscribers.add(queue)
+                active = record.active
+                finished = (
+                    not active
+                    and bool(record.events)
+                    and record.events[-1].event_type == "done"
+                )
+
+        if record is None:
+            persisted_history = await self.history(thread_id)
+            if not persisted_history:
                 raise ThreadNotFoundError(thread_id)
 
-            replay = [
-                event
-                for event in record.events
-                if last_event_id is None or event.event_id > last_event_id
-            ]
-            queue: asyncio.Queue[ChatEvent] = asyncio.Queue()
-            record.subscribers.add(queue)
-            active = record.active
-            finished = (
-                not active
-                and bool(record.events)
-                and record.events[-1].event_type == "done"
-            )
-
-        for event in replay:
-            yield event
-
-        if finished:
+            event_id = 1
+            for message in persisted_history:
+                if message["role"] != "assistant":
+                    continue
+                if last_event_id is None or event_id > last_event_id:
+                    yield ChatEvent(
+                        event_id,
+                        "message",
+                        {
+                            "thread_id": thread_id,
+                            "content": message["content"],
+                        },
+                    )
+                event_id += 1
+                if last_event_id is None or event_id > last_event_id:
+                    yield ChatEvent(
+                        event_id,
+                        "done",
+                        {
+                            "thread_id": thread_id,
+                            "status": "completed",
+                        },
+                    )
+                event_id += 1
             return
 
         try:
+            for event in replay:
+                yield event
+
+            if finished:
+                return
+
             while True:
                 event = await queue.get()
                 yield event
@@ -282,3 +366,18 @@ class ChatRepository:
                 record = self._threads.get(thread_id)
                 if record is not None:
                     record.subscribers.discard(queue)
+
+    @staticmethod
+    async def _next_message_sequence(
+        session: AsyncSession,
+        thread_id: str,
+    ) -> int:
+        result = await session.execute(
+            select(
+                func.coalesce(
+                    func.max(ChatMessageRecord.sequence),
+                    -1,
+                )
+            ).where(ChatMessageRecord.thread_id == thread_id)
+        )
+        return int(result.scalar_one()) + 1

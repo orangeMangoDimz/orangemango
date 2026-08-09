@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from time import monotonic
 from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import BaseMessage
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
 from app.config.const.api_res import (
@@ -16,7 +17,8 @@ from app.config.const.api_res import (
     MESSAGE_STATUS_FAILED,
 )
 from app.data.schema.response import AcceptedMessageResponse
-from app.db.session import Database
+from app.db.session import Database, postgres_checkpointer_url
+from app.logger import log_exception, logger
 from app.models.chat_model import ChatModel
 from app.repositories.chat_repository import (
     ChatEvent,
@@ -25,9 +27,6 @@ from app.repositories.chat_repository import (
     ChatRepository,
     ThreadNotFoundError,
 )
-
-
-logger = logging.getLogger(__name__)
 
 _MAX_SERIALIZED_TEXT = 4000
 _MAX_SERIALIZED_ITEMS = 64
@@ -100,38 +99,71 @@ class ChatService:
         database: Database | None = None,
         provider: str = "openai",
         model_name: str = "unknown",
+        chat_model: ChatModel | None = None,
     ) -> None:
         self._repository = repository
         self._database = database
         self._provider = provider
         self._model_name = model_name
+        self._chat_model = chat_model
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._startup_lock = asyncio.Lock()
+        self._checkpointer_stack: AsyncExitStack | None = None
 
     @classmethod
     def from_environment(cls) -> ChatService:
         model = ChatModel.from_env()
-        from langgraph.checkpoint.memory import MemorySaver
-
-        from studio.chatbot.graph import build_graph
-
-        checkpointer = MemorySaver()
-        graph = build_graph(checkpointer=checkpointer, chat_model=model)
         database = Database.from_environment()
         return cls(
             ChatRepository(
-                graph=graph,
+                graph=None,
                 session_factory=database.session_factory,
             ),
             database=database,
             provider=model.provider,
             model_name=model.model_name,
+            chat_model=model,
         )
+
+    async def startup(self) -> None:
+        """Initialize the durable LangGraph checkpointer once per service."""
+        if self._repository.graph is not None:
+            return
+        if self._chat_model is None:
+            raise ChatPersistenceError("Chat model is not configured")
+
+        async with self._startup_lock:
+            if self._repository.graph is not None:
+                return
+
+            stack = AsyncExitStack()
+            try:
+                checkpointer = await stack.enter_async_context(
+                    AsyncPostgresSaver.from_conn_string(
+                        postgres_checkpointer_url()
+                    )
+                )
+                await checkpointer.setup()
+
+                from studio.chatbot.graph import build_graph
+
+                self._repository.graph = build_graph(
+                    checkpointer=checkpointer,
+                    chat_model=self._chat_model,
+                )
+                self._checkpointer_stack = stack
+            except Exception as exc:
+                await stack.aclose()
+                raise ChatPersistenceError(
+                    "Unable to initialize durable chat history"
+                ) from exc
 
     async def accept_message(
         self,
         thread_id: str,
         message: str,
     ) -> AcceptedMessageResponse:
+        await self.startup()
         try:
             request_id = await self._repository.begin_run(
                 thread_id,
@@ -155,13 +187,20 @@ class ChatService:
                     error_message=CHAT_STREAM_ERROR,
                 )
             except ChatPersistenceError:
-                logger.exception(
+                log_exception(
                     "Unable to persist failed chat request",
-                    extra={"thread_id": thread_id},
+                    exc_info=True,
+                    thread_id=thread_id,
+                    request_id=str(request_id),
                 )
             raise
 
         self._tasks[thread_id] = task
+        logger.info(
+            "Accepted chat message thread_id={thread_id} request_id={request_id}",
+            thread_id=thread_id,
+            request_id=str(request_id),
+        )
         return AcceptedMessageResponse(
             thread_id=thread_id,
             request_id=request_id,
@@ -274,13 +313,20 @@ class ChatService:
                         request_status="cancelled",
                     )
                 except ChatPersistenceError:
-                    logger.exception(
+                    log_exception(
                         "Unable to persist cancelled chat request",
-                        extra={"thread_id": thread_id},
+                        exc_info=True,
+                        thread_id=thread_id,
+                        request_id=str(request_id),
                     )
             raise
-        except Exception:
-            logger.exception("Chat graph run failed", extra={"thread_id": thread_id})
+        except Exception as exc:
+            log_exception(
+                "Chat graph run failed",
+                exc=exc,
+                thread_id=thread_id,
+                request_id=str(request_id),
+            )
             if not response_persisted:
                 try:
                     await self._repository.fail_request(
@@ -289,9 +335,11 @@ class ChatService:
                         error_message=CHAT_STREAM_ERROR,
                     )
                 except ChatPersistenceError:
-                    logger.exception(
+                    log_exception(
                         "Unable to persist failed chat request",
-                        extra={"thread_id": thread_id},
+                        exc_info=True,
+                        thread_id=thread_id,
+                        request_id=str(request_id),
                     )
             try:
                 await self._repository.publish(
@@ -312,10 +360,12 @@ class ChatService:
                         "status": MESSAGE_STATUS_FAILED,
                     },
                 )
-            except ThreadNotFoundError:
-                logger.exception(
+            except ThreadNotFoundError as publish_exc:
+                log_exception(
                     "Unable to publish chat graph failure",
-                    extra={"thread_id": thread_id},
+                    exc=publish_exc,
+                    thread_id=thread_id,
+                    request_id=str(request_id),
                 )
         finally:
             await self._repository.end_run(thread_id)
@@ -330,5 +380,8 @@ class ChatService:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._checkpointer_stack is not None:
+            await self._checkpointer_stack.aclose()
+            self._checkpointer_stack = None
         if self._database is not None:
             await self._database.dispose()

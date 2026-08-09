@@ -48,6 +48,24 @@ def sync_database_url() -> str:
     return _postgres_url(_raw_database_url(), "psycopg")
 
 
+def postgres_checkpointer_url() -> str:
+    """Return a driver-neutral PostgreSQL URL for psycopg-based libraries."""
+    normalized = _raw_database_url()
+    if normalized.startswith("postgres://"):
+        return "postgresql://" + normalized.removeprefix("postgres://")
+
+    for scheme in (
+        "postgresql+asyncpg://",
+        "postgresql+psycopg://",
+        "postgresql+psycopg2://",
+        "postgresql://",
+    ):
+        if normalized.startswith(scheme):
+            return "postgresql://" + normalized[len(scheme) :]
+
+    raise DatabaseConfigurationError("DATABASE_URL must use PostgreSQL")
+
+
 class Database:
     """Own the application engine and per-operation async session factory."""
 
