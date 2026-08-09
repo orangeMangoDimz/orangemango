@@ -1,0 +1,22 @@
+exclude: ^\.gitignore$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-ast
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: compile-python
+        name: Compile Python sources
+        entry: uv run python -m compileall -q app main.py studio
+        language: system
+        pass_filenames: false
+        types: [python]
