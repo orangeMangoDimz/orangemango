@@ -31,6 +31,7 @@ services:
 
       # [Database Connection]
       # Connection settings used by the API to reach PostgreSQL.
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN must be set in .env}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in .env}
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}

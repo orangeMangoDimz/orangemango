@@ -28,6 +28,7 @@ from app.db.session import DatabaseConfigurationError
 from app.logger import configure_logging, log_exception, logger
 from app.models.chat_model import ChatConfigurationError
 from app.repositories.chat_repository import ChatPersistenceError
+from app.security.auth import require_api_token
 from app.services.chat_service import (
     ChatService,
     ChatThreadBusyError,
@@ -140,6 +141,7 @@ async def healthz() -> HealthResponse:
     summary=CHAT_ENDPOINT_SUMMARY,
     description=CHAT_ENDPOINT_DESCRIPTION,
     tags=[CHAT_API_TAG],
+    dependencies=[Depends(require_api_token)],
 )
 async def post_message(
     request: MessageRequest,
@@ -162,6 +164,7 @@ async def post_message(
     summary=EVENT_ENDPOINT_SUMMARY,
     description=EVENT_ENDPOINT_DESCRIPTION,
     tags=[EVENT_API_TAG],
+    dependencies=[Depends(require_api_token)],
 )
 async def get_events(
     thread_id: str = Query(..., min_length=1, max_length=MAX_THREAD_ID_LENGTH),

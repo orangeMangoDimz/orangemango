@@ -2,6 +2,9 @@ CHAT_ENDPOINT_DESCRIPTION = (
     "Accepts a validated message and starts a LangGraph response run for the "
     "specified thread. Generated events are available from GET /events."
 )
+API_AUTH_TOKEN_ENV = "API_AUTH_TOKEN"
+API_AUTH_NOT_CONFIGURED = "API authentication is not configured"
+INVALID_API_AUTH_TOKEN = "Invalid or missing bearer token"
 CHAT_ENDPOINT_SUMMARY = "Start a chat response"
 CHAT_API_TAG = "Chat"
 CHAT_SERVICE_NOT_CONFIGURED = "Chat service is not configured"
