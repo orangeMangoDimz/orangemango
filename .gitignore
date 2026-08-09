@@ -25,5 +25,6 @@ tmp/
 # [Tools]
 .code-review-graph/
 .superpowers/
+docs/superpowers/
 .langgraph_api/
 graphify-out/
