@@ -1,87 +1,152 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 import json
-import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from app.config.const.api_res import (
+    CHAT_ENDPOINT_DESCRIPTION,
+    CHAT_ENDPOINT_SUMMARY,
+    CHAT_SERVICE_NOT_CONFIGURED,
+    CHAT_THREAD_BUSY,
+    CHAT_THREAD_NOT_FOUND,
+    EVENT_ENDPOINT_DESCRIPTION,
+    EVENT_ENDPOINT_SUMMARY,
+    HEALTH_ENDPOINT_DESCRIPTION,
+    HEALTH_ENDPOINT_SUMMARY,
+    HEALTH_STATUS_OK,
+    THREAD_ID_MUST_NOT_BE_BLANK,
+)
+from app.config.const.chat import MAX_THREAD_ID_LENGTH
+from app.data.schema.request import MessageRequest
+from app.data.schema.response import AcceptedMessageResponse, HealthResponse
+from app.db.session import DatabaseConfigurationError
+from app.models.chat_model import ChatConfigurationError
+from app.repositories.chat_repository import ChatPersistenceError
+from app.services.chat_service import (
+    ChatService,
+    ChatThreadBusyError,
+    ChatThreadNotFoundError,
+)
+from app.middleware.middleware import configure_middleware
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, field_validator
 
 
-DEFAULT_MODEL = "gpt-4o-mini"
-MAX_MESSAGE_LENGTH = 10_000
-GENERIC_STREAM_ERROR = "Unable to generate a response."
-
-app = FastAPI(title="Orangemango API")
+_chat_service: ChatService | None = None
 
 
-class ChatConfigurationError(RuntimeError):
-    pass
-
-
-class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
-
-    @field_validator("message")
-    @classmethod
-    def validate_message(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("message must not be blank")
-        return normalized
-
-
-def create_chat_model() -> ChatOpenAI:
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key.strip():
-        raise ChatConfigurationError
-
-    return ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", DEFAULT_MODEL),
-        temperature=0,
-        api_key=api_key,
-    )
-
-
-def chunk_content(chunk: object) -> str:
-    if isinstance(chunk, str):
-        return chunk
-
-    content = getattr(chunk, "content", "")
-    return content if isinstance(content, str) else ""
-
-
-async def stream_chat(message: str, model: ChatOpenAI) -> AsyncIterator[str]:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     try:
-        async for chunk in model.astream(message):
-            content = chunk_content(chunk)
-            if content:
-                yield f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-    except Exception:
-        yield f"data: {json.dumps({'error': GENERIC_STREAM_ERROR})}\n\n"
-    else:
-        yield "data: [DONE]\n\n"
+        yield
+    finally:
+        if _chat_service is not None:
+            await _chat_service.shutdown()
 
 
-@app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+app = FastAPI(title="Orangemango API", lifespan=lifespan)
+configure_middleware(app)
 
 
-@app.post("/mango/chat", response_class=StreamingResponse)
-async def chat(request: ChatRequest) -> StreamingResponse:
+def get_chat_service() -> ChatService:
+    global _chat_service
+    if _chat_service is None:
+        try:
+            _chat_service = ChatService.from_environment()
+        except (ChatConfigurationError, DatabaseConfigurationError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=CHAT_SERVICE_NOT_CONFIGURED,
+            ) from exc
+    return _chat_service
+
+
+def _normalize_thread_id(thread_id: str) -> str:
+    normalized = thread_id.strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail=THREAD_ID_MUST_NOT_BE_BLANK)
+    return normalized
+
+
+def _last_event_id(value: str | None) -> int | None:
+    if value is None:
+        return None
     try:
-        model = create_chat_model()
-    except ChatConfigurationError as exc:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+async def _format_sse(events: AsyncIterator[object]) -> AsyncIterator[str]:
+    async for event in events:
+        event_type = getattr(event, "event_type")
+        event_id = getattr(event, "event_id")
+        data = getattr(event, "data")
+        yield (
+            f"event: {event_type}\n"
+            f"id: {event_id}\n"
+            f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+        )
+
+
+@app.get(
+    "/healthz",
+    response_model=HealthResponse,
+    summary=HEALTH_ENDPOINT_SUMMARY,
+    description=HEALTH_ENDPOINT_DESCRIPTION,
+)
+async def healthz() -> HealthResponse:
+    return HealthResponse(status=HEALTH_STATUS_OK)
+
+
+@app.post(
+    "/message",
+    response_model=AcceptedMessageResponse,
+    status_code=202,
+    summary=CHAT_ENDPOINT_SUMMARY,
+    description=CHAT_ENDPOINT_DESCRIPTION,
+)
+async def post_message(
+    request: MessageRequest,
+    service: ChatService = Depends(get_chat_service),
+) -> AcceptedMessageResponse:
+    try:
+        return await service.accept_message(request.thread_id, request.message)
+    except ChatThreadBusyError as exc:
+        raise HTTPException(status_code=409, detail=CHAT_THREAD_BUSY) from exc
+    except ChatPersistenceError as exc:
         raise HTTPException(
             status_code=503,
-            detail="Chat service is not configured",
+            detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
 
+
+@app.get(
+    "/events",
+    response_class=StreamingResponse,
+    summary=EVENT_ENDPOINT_SUMMARY,
+    description=EVENT_ENDPOINT_DESCRIPTION,
+)
+async def get_events(
+    thread_id: str = Query(..., min_length=1, max_length=MAX_THREAD_ID_LENGTH),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    service: ChatService = Depends(get_chat_service),
+) -> StreamingResponse:
+    normalized_thread_id = _normalize_thread_id(thread_id)
+    try:
+        await service.ensure_thread(normalized_thread_id)
+    except ChatThreadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=CHAT_THREAD_NOT_FOUND) from exc
+
     return StreamingResponse(
-        stream_chat(request.message, model),
+        _format_sse(
+            service.events(
+                normalized_thread_id,
+                _last_event_id(last_event_id),
+            )
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
