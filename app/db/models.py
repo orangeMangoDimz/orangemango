@@ -5,12 +5,14 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -64,6 +66,238 @@ class ChatThread(SQLModel, table=True):
             nullable=False,
             server_default=text("CURRENT_TIMESTAMP"),
         ),
+    )
+
+
+class CvDocument(SQLModel, table=True):
+    __tablename__ = "cv_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('uploaded', 'processing', 'completed', 'failed')",
+            name="ck_cv_documents_status",
+        ),
+        CheckConstraint(
+            "btrim(filename) <> ''",
+            name="ck_cv_documents_filename_not_blank",
+        ),
+        CheckConstraint(
+            "btrim(storage_key) <> ''",
+            name="ck_cv_documents_storage_key_not_blank",
+        ),
+        CheckConstraint(
+            "size_bytes >= 0",
+            name="ck_cv_documents_size_bytes",
+        ),
+        Index(
+            "ix_cv_documents_thread_uploaded",
+            "thread_id",
+            text("uploaded_at DESC"),
+        ),
+        UniqueConstraint(
+            "thread_id",
+            "sha256",
+            name="uq_cv_documents_thread_sha256",
+        ),
+    )
+
+    id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            primary_key=True,
+            nullable=False,
+        ),
+    )
+    thread_id: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String(128),
+            ForeignKey("chat_threads.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    request_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            ForeignKey("chat_requests.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    filename: str = Field(
+        sa_column=Column(String(255), nullable=False),
+    )
+    storage_key: str = Field(
+        sa_column=Column(String(512), nullable=False),
+    )
+    sha256: str = Field(
+        sa_column=Column(String(64), nullable=False),
+    )
+    mime_type: str = Field(
+        default="application/pdf",
+        sa_column=Column(
+            String(127),
+            nullable=False,
+            server_default=text("'application/pdf'"),
+        ),
+    )
+    size_bytes: int = Field(
+        sa_column=Column(BigInteger, nullable=False),
+    )
+    extracted_text: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    content: bytes | None = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
+    )
+    status: str = Field(
+        default="uploaded",
+        sa_column=Column(
+            String(16),
+            nullable=False,
+            server_default=text("'uploaded'"),
+        ),
+    )
+    uploaded_at: datetime = Field(
+        default_factory=_utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+
+
+class CvExtraction(SQLModel, table=True):
+    __tablename__ = "cv_extraction_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "version >= 1",
+            name="ck_cv_extraction_runs_version",
+        ),
+        CheckConstraint(
+            "status IN ('processing', 'completed', 'failed')",
+            name="ck_cv_extraction_runs_status",
+        ),
+        CheckConstraint(
+            "validation_status IS NULL OR validation_status IN ('valid', 'invalid')",
+            name="ck_cv_extraction_runs_validation_status",
+        ),
+        Index(
+            "ix_cv_extraction_runs_document_version",
+            "document_id",
+            text("version DESC"),
+        ),
+        UniqueConstraint(
+            "document_id",
+            "version",
+            name="uq_cv_extraction_runs_document_version",
+        ),
+        Index(
+            "uq_active_cv_extraction",
+            "document_id",
+            "thread_id",
+            unique=True,
+            postgresql_where=text("status = 'processing'"),
+        ),
+    )
+
+    id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            primary_key=True,
+            nullable=False,
+        ),
+    )
+    document_id: UUID = Field(
+        sa_column=Column(
+            PostgreSQLUUID(as_uuid=True),
+            ForeignKey("cv_documents.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
+    thread_id: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String(128),
+            ForeignKey("chat_threads.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    version: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    provider: str = Field(
+        default="openai",
+        sa_column=Column(
+            String(32),
+            nullable=False,
+            server_default=text("'openai'"),
+        ),
+    )
+    model: str = Field(
+        default="cv-extraction",
+        sa_column=Column(String(128), nullable=False),
+    )
+    status: str = Field(
+        default="processing",
+        sa_column=Column(
+            String(16),
+            nullable=False,
+            server_default=text("'processing'"),
+        ),
+    )
+    validation_status: str | None = Field(
+        default=None,
+        sa_column=Column(String(16), nullable=True),
+    )
+    extraction_result: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            "raw_result",
+            JSONB,
+            nullable=False,
+            server_default=text("'{}'::jsonb"),
+        ),
+    )
+    matching_features: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'{}'::jsonb"),
+        ),
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'[]'::jsonb"),
+        ),
+    )
+    errors: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'[]'::jsonb"),
+        ),
+    )
+    started_at: datetime = Field(
+        default_factory=_utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    finished_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 

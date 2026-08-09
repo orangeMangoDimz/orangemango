@@ -19,3 +19,15 @@ class MessageRequest(BaseModel):
                 raise ValueError(THREAD_ID_MUST_NOT_BE_BLANK)
             raise ValueError(MESSAGE_MUST_NOT_BE_BLANK)
         return normalized
+
+
+class CvExtractionRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=MAX_THREAD_ID_LENGTH)
+
+    @field_validator("thread_id")
+    @classmethod
+    def validate_thread_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(THREAD_ID_MUST_NOT_BE_BLANK)
+        return normalized

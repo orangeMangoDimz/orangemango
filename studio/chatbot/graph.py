@@ -25,7 +25,6 @@ import binascii
 import importlib.util
 import json
 import sys
-from io import BytesIO
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Annotated, Literal, TypedDict
@@ -37,7 +36,9 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
-from pypdf import PdfReader
+
+from app.config.const.chat import MAX_CV_FILE_BYTES
+from app.services.cv_document import extract_pdf_text, validate_pdf_upload
 
 
 def _load_graph(path: Path, module_name: str) -> ModuleType:
@@ -78,7 +79,7 @@ JOB_SUBAGENT_MCP_CLIENT = MultiServerMCPClient(
 )
 _JOB_SUBAGENT_SCRAPE_TOOL: Any | None = None
 
-MAX_PDF_BYTES = 10 * 1024 * 1024
+MAX_PDF_BYTES = MAX_CV_FILE_BYTES
 MAX_JOB_CARDS = 12
 MAX_JOB_EXTRACTIONS = 5
 MAX_FIELD_CHARS = 800
@@ -261,16 +262,12 @@ def read_uploaded_cv(uploaded_file: Any) -> str:
     if content is None:
         content = uploaded_file.get("base64")
     payload = _decode_upload_content(content)
-    if len(payload) > MAX_PDF_BYTES:
-        raise ValueError(f"CV PDF exceeds the {MAX_PDF_BYTES} byte limit")
-    if not payload.startswith(b"%PDF-"):
-        raise ValueError("Uploaded CV content is not a PDF")
-
-    reader = PdfReader(BytesIO(payload))
-    text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-    if not text:
-        raise ValueError(f"No text could be extracted from {filename}")
-    return text
+    validate_pdf_upload(
+        filename=filename,
+        content_type="application/pdf",
+        content=payload,
+    )
+    return extract_pdf_text(payload)
 
 
 def with_message_content(message: Any, content: str | list[dict[str, Any]]) -> Any:
