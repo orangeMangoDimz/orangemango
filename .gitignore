@@ -1,10 +1,28 @@
+# [Python environments]
 .venv/
 .venv-local/
+
+# [Environment and secrets]
 .env
+
+# [Python artifacts]
 __pycache__/
 .ipynb_checkpoints/
 *.pyc
+.coverage
+.pytest_cache/
+
+# [Development tools]
 .cursor/
+
+# [Generated and local files]
 logs/
 notebooks/
 tmp/
+*.log
+
+# [Tools]
+.code-review-graph/
+.superpowers/
+.langgraph_api/
+graphify-out/
