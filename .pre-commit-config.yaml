@@ -12,6 +12,15 @@ repos:
       - id: check-ast
       - id: check-merge-conflict
       - id: check-added-large-files
+      - id: detect-private-key
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        name: Bandit security scan
+        args: [--recursive, app, main.py, studio]
+        pass_filenames: false
 
   - repo: local
     hooks:

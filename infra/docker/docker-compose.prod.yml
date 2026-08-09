@@ -6,3 +6,6 @@ services:
     image: "${GHCR_IMAGE:?GHCR_IMAGE must be set}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     pull_policy: always
     restart: unless-stopped
+    # Keep the API reachable by the host Nginx proxy only.
+    ports: !override
+      - "127.0.0.1:8000:8000"

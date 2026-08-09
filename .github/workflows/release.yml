@@ -31,9 +31,9 @@ env:
 
 jobs:
   # [Quality Gate]
-  # Checks release configuration and code quality.
+  # Checks release configuration, quality, and security.
   quality:
-    name: Format and lint
+    name: Format, lint, and security
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -103,6 +103,14 @@ jobs:
 
       - name: Run lint checks
         run: uv run ruff check .
+
+      # [Security Gate]
+      # Scans Python code and locked dependencies.
+      - name: Run Bandit security scan
+        run: uv run bandit --recursive app main.py studio --quiet
+
+      - name: Audit Python dependencies
+        run: uv run pip-audit --strict
 
   # [Image Build]
   # Builds and publishes the GHCR image.
@@ -181,6 +189,7 @@ jobs:
           sparse-checkout: |
             infra/docker/docker-compose.yml
             infra/docker/docker-compose.prod.yml
+            infra/nginx/orangemango.conf
           sparse-checkout-cone-mode: false
 
       - name: Validate deployment secrets
@@ -235,6 +244,7 @@ jobs:
           set -euo pipefail
           deploy_path="$1"
           install -d -m 755 "$deploy_path/infra/docker"
+          install -d -m 755 "$deploy_path/infra/nginx"
           REMOTE_SCRIPT
 
       - name: Copy Compose files
@@ -245,6 +255,9 @@ jobs:
             infra/docker/docker-compose.yml \
             infra/docker/docker-compose.prod.yml \
             "orangemango-vps:$VPS_DEPLOY_PATH/infra/docker/"
+          scp \
+            infra/nginx/orangemango.conf \
+            "orangemango-vps:$VPS_DEPLOY_PATH/infra/nginx/"
 
       - name: Log in to GHCR on the VPS
         env:
@@ -281,6 +294,30 @@ jobs:
           "${compose[@]}" config --quiet
           "${compose[@]}" up -d --pull always --no-build --wait --wait-timeout 60 --remove-orphans
           "${compose[@]}" ps
+          REMOTE_SCRIPT
+
+      # [Nginx Reverse Proxy]
+      # Publishes the API on port 80 while keeping port 8000 private.
+      - name: Configure Nginx reverse proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh orangemango-vps bash -s -- "$VPS_DEPLOY_PATH" "$VPS_HOST" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          deploy_path="$1"
+          vps_host="$2"
+          nginx_source="$deploy_path/infra/nginx/orangemango.conf"
+          nginx_target="/etc/nginx/sites-available/orangemango"
+          nginx_link="/etc/nginx/sites-enabled/orangemango"
+          nginx_rendered="$(mktemp)"
+          trap 'rm -f "$nginx_rendered"' EXIT
+
+          sed "s|__VPS_HOST__|$vps_host|g" "$nginx_source" > "$nginx_rendered"
+          sudo -n install -m 644 "$nginx_rendered" "$nginx_target"
+          sudo -n ln -sfn "$nginx_target" "$nginx_link"
+          sudo -n nginx -t
+          sudo -n systemctl reload nginx
           REMOTE_SCRIPT
 
   # [Image Retention]
