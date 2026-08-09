@@ -21,7 +21,9 @@ EVENT_ENDPOINT_DESCRIPTION = (
 )
 EVENT_ENDPOINT_SUMMARY = "Stream chat events"
 EVENT_API_TAG = "Events"
-HEALTH_ENDPOINT_DESCRIPTION = "Returns the current health status of the Orangemango API."
+HEALTH_ENDPOINT_DESCRIPTION = (
+    "Returns the current health status of the Orangemango API."
+)
 HEALTH_ENDPOINT_SUMMARY = "Check API health"
 HEALTH_API_TAG = "Health"
 HEALTH_STATUS_OK = "ok"

@@ -35,7 +35,6 @@ if settings.langsmith_api_key:
     os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
 
 
-import json
 import re
 import uuid
 from pathlib import Path
@@ -46,7 +45,15 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field, model_validator
 
 Seniority = Literal[
-    "intern", "entry", "junior", "mid", "senior", "lead", "manager", "director", "unknown"
+    "intern",
+    "entry",
+    "junior",
+    "mid",
+    "senior",
+    "lead",
+    "manager",
+    "director",
+    "unknown",
 ]
 EducationLevel = Literal[
     "high_school", "diploma", "bachelor", "master", "doctorate", "unspecified"
@@ -83,10 +90,23 @@ SKILL_ALIASES = {
     "express.js": "Express.js",
 }
 SENIORITY_VALUES = {
-    "intern", "entry", "junior", "mid", "senior", "lead", "manager", "director", "unknown"
+    "intern",
+    "entry",
+    "junior",
+    "mid",
+    "senior",
+    "lead",
+    "manager",
+    "director",
+    "unknown",
 }
 EDUCATION_VALUES = {
-    "high_school", "diploma", "bachelor", "master", "doctorate", "unspecified"
+    "high_school",
+    "diploma",
+    "bachelor",
+    "master",
+    "doctorate",
+    "unspecified",
 }
 PERIOD_VALUES = {"hourly", "daily", "monthly", "yearly"}
 
@@ -99,7 +119,11 @@ class ExpectedSalary(BaseModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> "ExpectedSalary":
-        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
             raise ValueError("expected salary minimum cannot exceed maximum")
         return self
 
@@ -206,6 +230,7 @@ class CvState(TypedDict, total=False):
     validation_status: Literal["valid", "invalid"]
     validation_errors: list[str]
 
+
 EXTRACTION_PROMPT = """You are a CV data extraction agent.
 
 Your task is to extract structured candidate profile data from the provided CV. The extracted data will be used by a rule-based service to match the candidate against job postings.
@@ -288,7 +313,12 @@ def validate_pdf_upload(
 ) -> None:
     normalized_filename = filename.replace("\\", "/")
     safe_name = Path(normalized_filename).name
-    if not filename or normalized_filename != filename or safe_name != normalized_filename or safe_name in {".", ".."}:
+    if (
+        not filename
+        or normalized_filename != filename
+        or safe_name != normalized_filename
+        or safe_name in {".", ".."}
+    ):
         raise ValueError("invalid PDF filename")
     if Path(safe_name).suffix.casefold() != ".pdf":
         raise ValueError("only .pdf uploads are supported")
@@ -308,7 +338,9 @@ def mark_unproven_fields(
     extract: dict[str, Any],
     warnings: list[str],
 ) -> tuple[dict[str, Any], list[str]]:
-    field_evidence = [dict(item) for item in extract.get("field_evidence") or [] if item.get("field")]
+    field_evidence = [
+        dict(item) for item in extract.get("field_evidence") or [] if item.get("field")
+    ]
     evidence_by_field = {item["field"]: item for item in field_evidence}
     ambiguous = unique_preserve(extract.get("ambiguous_fields") or [])
 
@@ -375,7 +407,9 @@ def normalize_node(state: CvState) -> dict[str, Any]:
 
     seniority = (extract.get("seniority") or "unknown").lower()
     if seniority not in SENIORITY_VALUES:
-        warnings.append(f"Invalid seniority '{extract.get('seniority')}' reset to unknown")
+        warnings.append(
+            f"Invalid seniority '{extract.get('seniority')}' reset to unknown"
+        )
         seniority = "unknown"
     extract["seniority"] = seniority
 
@@ -395,8 +429,12 @@ def normalize_node(state: CvState) -> dict[str, Any]:
     extract["expected_salary"] = salary
 
     extract["role_tags"] = unique_preserve(extract.get("role_tags") or [])
-    extract["preferred_locations"] = unique_preserve(extract.get("preferred_locations") or [])
-    extract["preferred_work_types"] = unique_preserve(extract.get("preferred_work_types") or [])
+    extract["preferred_locations"] = unique_preserve(
+        extract.get("preferred_locations") or []
+    )
+    extract["preferred_work_types"] = unique_preserve(
+        extract.get("preferred_work_types") or []
+    )
     extract["preferred_employment_types"] = unique_preserve(
         extract.get("preferred_employment_types") or []
     )
@@ -555,6 +593,7 @@ def validate_node(state: CvState) -> dict[str, Any]:
         "validation_status": "valid",
         "validation_errors": [],
     }
+
 
 builder = StateGraph(CvState)
 builder.add_node("extract", extract_node)

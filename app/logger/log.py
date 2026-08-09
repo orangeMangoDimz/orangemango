@@ -101,7 +101,9 @@ def _request_fields(request: Request | None) -> dict[str, Any]:
 
 def _format_traceback(
     exc: BaseException | None,
-    exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | bool | None,
+    exc_info: tuple[type[BaseException], BaseException, TracebackType | None]
+    | bool
+    | None,
 ) -> tuple[str | None, str | None]:
     if exc is not None:
         return (
@@ -126,7 +128,9 @@ def persist_error_log(
     *,
     level: str = "ERROR",
     exc: BaseException | None = None,
-    exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | bool | None = None,
+    exc_info: tuple[type[BaseException], BaseException, TracebackType | None]
+    | bool
+    | None = None,
     request: Request | None = None,
     status_code: int | None = None,
     thread_id: str | None = None,
@@ -172,7 +176,9 @@ def log_exception(
     message: str,
     *,
     exc: BaseException | None = None,
-    exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | bool | None = None,
+    exc_info: tuple[type[BaseException], BaseException, TracebackType | None]
+    | bool
+    | None = None,
     request: Request | None = None,
     status_code: int | None = None,
     thread_id: str | None = None,

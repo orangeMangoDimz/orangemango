@@ -121,7 +121,9 @@ def assemble_results(state: OrchestratorState) -> dict[str, Any]:
         elif result.get("validation_status") == "valid":
             valid_children += 1
         else:
-            child_errors = result.get("validation_errors") or result.get("warnings") or []
+            child_errors = (
+                result.get("validation_errors") or result.get("warnings") or []
+            )
             validation_errors.append(
                 f"{label} extraction returned invalid output: {child_errors}"
             )
@@ -182,9 +184,7 @@ def build_final_explanation_context(state: OrchestratorState) -> dict[str, Any]:
         "validation_errors": state.get("validation_errors", []),
         "score": state.get("score"),
         "score_error": state.get("score_error"),
-        "cv_matching_features": (state.get("cv_result") or {}).get(
-            "matching_features"
-        ),
+        "cv_matching_features": (state.get("cv_result") or {}).get("matching_features"),
         "job_matching_features": (state.get("job_result") or {}).get(
             "matching_features"
         ),

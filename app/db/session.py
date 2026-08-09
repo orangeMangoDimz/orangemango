@@ -33,7 +33,7 @@ def _postgres_url(value: str, driver: str) -> str:
         "postgresql://",
     ):
         if normalized.startswith(scheme):
-            return f"postgresql+{driver}://{normalized[len(scheme):]}"
+            return f"postgresql+{driver}://{normalized[len(scheme) :]}"
 
     raise DatabaseConfigurationError("DATABASE_URL must use PostgreSQL")
 

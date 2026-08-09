@@ -34,7 +34,9 @@ _MAX_TRACKED_CLIENTS = 10_000
 
 def _get_allowed_origins() -> list[str]:
     configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    origins = [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
+    origins = [
+        origin.strip() for origin in configured_origins.split(",") if origin.strip()
+    ]
     return origins or list(_DEFAULT_CORS_ORIGINS)
 
 
@@ -134,7 +136,9 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
             timestamps.append(now)
             if len(self._request_times) > _MAX_TRACKED_CLIENTS:
                 stale_clients = [
-                    ip for ip, request_times in self._request_times.items() if not request_times
+                    ip
+                    for ip, request_times in self._request_times.items()
+                    if not request_times
                 ]
                 for ip in stale_clients:
                     del self._request_times[ip]

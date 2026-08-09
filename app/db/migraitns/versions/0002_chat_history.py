@@ -73,5 +73,7 @@ def upgrade() -> None:
             name="uq_chat_messages_thread_sequence",
         ),
     )
+
+
 def downgrade() -> None:
     op.drop_table("chat_messages")

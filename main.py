@@ -80,7 +80,6 @@ async def unhandled_exception_handler(
     )
 
 
-
 def get_chat_service() -> ChatService:
     global _chat_service
     if _chat_service is None:

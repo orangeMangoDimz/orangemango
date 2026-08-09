@@ -1,0 +1,304 @@
+# [Workflow Trigger]
+# Runs only for release tags.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# [Release Coordination]
+# Queues production releases in tag order.
+concurrency:
+  group: orangemango-production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# [Shared Configuration]
+# Uses repository variables and workflow values.
+env:
+  REGISTRY: ghcr.io
+  GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+  GHCR_PACKAGE_NAME: ${{ vars.GHCR_PACKAGE_NAME }}
+  VPS_HOST: ${{ vars.VPS_HOST }}
+  VPS_USER: ${{ vars.VPS_USER }}
+  VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
+  VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+  IMAGE_VERSIONS_TO_KEEP: ${{ vars.IMAGE_VERSIONS_TO_KEEP || '10' }}
+  IMAGE_TAG: ${{ github.ref_name }}
+
+jobs:
+  # [Quality Gate]
+  # Checks release configuration and code quality.
+  quality:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must match vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
+          for variable_name in GHCR_IMAGE GHCR_PACKAGE_NAME VPS_HOST VPS_USER VPS_DEPLOY_PATH; do
+            if [[ -z "${!variable_name}" ]]; then
+              echo "Missing GitHub repository variable: ${variable_name}" >&2
+              exit 1
+            fi
+          done
+
+          if [[ ! "$GHCR_IMAGE" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*$ ]]; then
+            echo "GHCR_IMAGE must be a lowercase ghcr.io image reference" >&2
+            exit 1
+          fi
+          if [[ ! "$GHCR_PACKAGE_NAME" =~ ^[a-z0-9._-]+$ ]]; then
+            echo "GHCR_PACKAGE_NAME contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$VPS_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+            echo "VPS_HOST contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$VPS_USER" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]]; then
+            echo "VPS_USER contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$VPS_DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "VPS_DEPLOY_PATH must be an absolute path without shell metacharacters" >&2
+            exit 1
+          fi
+          if [[ ! "$VPS_SSH_PORT" =~ ^[0-9]+$ ]] || ((VPS_SSH_PORT < 1 || VPS_SSH_PORT > 65535)); then
+            echo "VPS_SSH_PORT must be between 1 and 65535" >&2
+            exit 1
+          fi
+          if [[ ! "$IMAGE_VERSIONS_TO_KEEP" =~ ^[1-9][0-9]*$ ]]; then
+            echo "IMAGE_VERSIONS_TO_KEEP must be a positive integer" >&2
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.30"
+          enable-cache: true
+
+      - name: Install development dependencies
+        run: uv sync --locked --group dev --no-install-project
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Run lint checks
+        run: uv run ruff check .
+
+  # [Image Build]
+  # Builds and publishes the GHCR image.
+  build:
+    name: Build and publish image
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: infra/docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=orangemango
+          cache-to: type=gha,mode=max,scope=orangemango
+          provenance: true
+          sbom: true
+
+  # [VPS Deployment]
+  # Pulls and starts the release with Compose.
+  deploy:
+    name: Deploy with Docker Compose
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            infra/docker/docker-compose.yml
+            infra/docker/docker-compose.prod.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Validate deployment secrets
+        env:
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variable_name in GHCR_PULL_USERNAME GHCR_PULL_TOKEN VPS_KNOWN_HOSTS VPS_SSH_PRIVATE_KEY; do
+            if [[ -z "${!variable_name}" ]]; then
+              echo "Missing GitHub Actions secret: ${variable_name}" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$GHCR_PULL_USERNAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "GHCR_PULL_USERNAME contains unsupported characters" >&2
+            exit 1
+          fi
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Configure SSH host verification
+        env:
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+          {
+            printf 'Host orangemango-vps\n'
+            printf '  HostName %s\n' "$VPS_HOST"
+            printf '  User %s\n' "$VPS_USER"
+            printf '  Port %s\n' "$VPS_SSH_PORT"
+            printf '  StrictHostKeyChecking yes\n'
+            printf '  UserKnownHostsFile %s\n' "$HOME/.ssh/known_hosts"
+          } > "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
+
+      - name: Prepare deployment directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh orangemango-vps bash -s -- "$VPS_DEPLOY_PATH" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          deploy_path="$1"
+          install -d -m 755 "$deploy_path/infra/docker"
+          REMOTE_SCRIPT
+
+      - name: Copy Compose files
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp \
+            infra/docker/docker-compose.yml \
+            infra/docker/docker-compose.prod.yml \
+            "orangemango-vps:$VPS_DEPLOY_PATH/infra/docker/"
+
+      - name: Log in to GHCR on the VPS
+        env:
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh orangemango-vps \
+            "docker login '$REGISTRY' --username '$GHCR_PULL_USERNAME' --password-stdin"
+
+      - name: Pull and start the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh orangemango-vps \
+            bash -s -- "$VPS_DEPLOY_PATH" "$GHCR_IMAGE" "$IMAGE_TAG" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          deploy_path="$1"
+          image="$2"
+          image_tag="$3"
+          cd "$deploy_path"
+
+          export GHCR_IMAGE="$image"
+          export IMAGE_TAG="$image_tag"
+          compose=(
+            docker compose
+            --env-file .env
+            -f infra/docker/docker-compose.yml
+            -f infra/docker/docker-compose.prod.yml
+          )
+
+          "${compose[@]}" config --quiet
+          "${compose[@]}" up -d --pull always --no-build --wait --wait-timeout 60 --remove-orphans
+          "${compose[@]}" ps
+          REMOTE_SCRIPT
+
+  # [Image Retention]
+  # Removes older GHCR image versions.
+  cleanup:
+    name: Retain recent GHCR versions
+    needs: deploy
+    if: ${{ needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      packages: write
+    steps:
+      - name: Delete older image versions
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: ${{ env.GHCR_PACKAGE_NAME }}
+          package-type: container
+          min-versions-to-keep: ${{ env.IMAGE_VERSIONS_TO_KEEP }}
+          delete-only-untagged-versions: false
+          token: ${{ secrets.GITHUB_TOKEN }}

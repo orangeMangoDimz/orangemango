@@ -139,9 +139,7 @@ class ChatService:
             stack = AsyncExitStack()
             try:
                 checkpointer = await stack.enter_async_context(
-                    AsyncPostgresSaver.from_conn_string(
-                        postgres_checkpointer_url()
-                    )
+                    AsyncPostgresSaver.from_conn_string(postgres_checkpointer_url())
                 )
                 await checkpointer.setup()
 
@@ -175,9 +173,7 @@ class ChatService:
             raise ChatThreadBusyError(thread_id) from exc
 
         try:
-            task = asyncio.create_task(
-                self._run_graph(thread_id, message, request_id)
-            )
+            task = asyncio.create_task(self._run_graph(thread_id, message, request_id))
         except BaseException:
             await self._repository.end_run(thread_id)
             try:

@@ -45,14 +45,28 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field, model_validator
 
 Seniority = Literal[
-    "intern", "entry", "junior", "mid", "senior", "lead", "manager", "director", "unknown"
+    "intern",
+    "entry",
+    "junior",
+    "mid",
+    "senior",
+    "lead",
+    "manager",
+    "director",
+    "unknown",
 ]
 EducationLevel = Literal[
     "high_school", "diploma", "bachelor", "master", "doctorate", "unspecified"
 ]
 WorkType = Literal["remote", "hybrid", "onsite", "unknown"]
 EmploymentType = Literal[
-    "full_time", "part_time", "contract", "internship", "freelance", "temporary", "unknown"
+    "full_time",
+    "part_time",
+    "contract",
+    "internship",
+    "freelance",
+    "temporary",
+    "unknown",
 ]
 SalaryPeriod = Literal["hourly", "daily", "monthly", "yearly", "unknown"]
 
@@ -87,14 +101,33 @@ SKILL_ALIASES = {
 }
 
 SENIORITY_VALUES = {
-    "intern", "entry", "junior", "mid", "senior", "lead", "manager", "director", "unknown"
+    "intern",
+    "entry",
+    "junior",
+    "mid",
+    "senior",
+    "lead",
+    "manager",
+    "director",
+    "unknown",
 }
 EDUCATION_VALUES = {
-    "high_school", "diploma", "bachelor", "master", "doctorate", "unspecified"
+    "high_school",
+    "diploma",
+    "bachelor",
+    "master",
+    "doctorate",
+    "unspecified",
 }
 WORK_TYPE_VALUES = {"remote", "hybrid", "onsite", "unknown"}
 EMPLOYMENT_TYPE_VALUES = {
-    "full_time", "part_time", "contract", "internship", "freelance", "temporary", "unknown"
+    "full_time",
+    "part_time",
+    "contract",
+    "internship",
+    "freelance",
+    "temporary",
+    "unknown",
 }
 PERIOD_VALUES = {"hourly", "daily", "monthly", "yearly", "unknown"}
 
@@ -145,7 +178,11 @@ class SalaryExtract(BaseModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> "SalaryExtract":
-        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
             raise ValueError("salary minimum cannot exceed maximum")
         return self
 
@@ -158,7 +195,11 @@ class ExperienceRange(BaseModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> "ExperienceRange":
-        if self.minimum_years is not None and self.maximum_years is not None and self.minimum_years > self.maximum_years:
+        if (
+            self.minimum_years is not None
+            and self.maximum_years is not None
+            and self.minimum_years > self.maximum_years
+        ):
             raise ValueError("experience minimum cannot exceed maximum")
         return self
 
@@ -248,6 +289,7 @@ class JobState(TypedDict, total=False):
     warnings: list[str]
     validation_status: Literal["valid", "invalid"]
     validation_errors: list[str]
+
 
 EXTRACTION_PROMPT = """You are a job posting data extraction agent.
 
@@ -370,7 +412,9 @@ def mark_unproven_fields(
     extract: dict[str, Any],
     warnings: list[str],
 ) -> tuple[dict[str, Any], list[str]]:
-    field_evidence = [dict(item) for item in extract.get("field_evidence") or [] if item.get("field")]
+    field_evidence = [
+        dict(item) for item in extract.get("field_evidence") or [] if item.get("field")
+    ]
     evidence_by_field = {item["field"]: item for item in field_evidence}
     ambiguous = unique_preserve(extract.get("ambiguous_fields") or [])
 
@@ -435,8 +479,8 @@ def extract_node(state: JobState) -> dict[str, Any]:
     job_url = payload.get("job_url") or job.get("url") or scraped.get("url")
     payload["job_url"] = job_url
     payload["source"] = payload.get("source") or scraped.get("site")
-    payload["source_job_id"] = (
-        payload.get("source_job_id") or source_job_id_from_url(job_url)
+    payload["source_job_id"] = payload.get("source_job_id") or source_job_id_from_url(
+        job_url
     )
     payload["content_hash"] = payload.get("content_hash") or content_hash(scraped)
     if not payload.get("raw_content"):
@@ -451,13 +495,21 @@ def normalize_node(state: JobState) -> dict[str, Any]:
     extract = dict(state.get("extract") or {})
     warnings = list(state.get("warnings") or [])
 
-    extract["required_skills"] = normalize_skill_list(extract.get("required_skills") or [])
-    extract["preferred_skills"] = normalize_skill_list(extract.get("preferred_skills") or [])
-    extract["mentioned_skills"] = normalize_skill_list(extract.get("mentioned_skills") or [])
+    extract["required_skills"] = normalize_skill_list(
+        extract.get("required_skills") or []
+    )
+    extract["preferred_skills"] = normalize_skill_list(
+        extract.get("preferred_skills") or []
+    )
+    extract["mentioned_skills"] = normalize_skill_list(
+        extract.get("mentioned_skills") or []
+    )
 
     seniority = (extract.get("seniority") or "unknown").lower()
     if seniority not in SENIORITY_VALUES:
-        warnings.append(f"Invalid seniority '{extract.get('seniority')}' reset to unknown")
+        warnings.append(
+            f"Invalid seniority '{extract.get('seniority')}' reset to unknown"
+        )
         seniority = "unknown"
     extract["seniority"] = seniority
 
@@ -471,7 +523,9 @@ def normalize_node(state: JobState) -> dict[str, Any]:
 
     work_type = (extract.get("work_type") or "unknown").lower()
     if work_type not in WORK_TYPE_VALUES:
-        warnings.append(f"Invalid work_type '{extract.get('work_type')}' reset to unknown")
+        warnings.append(
+            f"Invalid work_type '{extract.get('work_type')}' reset to unknown"
+        )
         work_type = "unknown"
     extract["work_type"] = work_type
 
@@ -512,7 +566,9 @@ def build_matching_features_node(state: JobState) -> dict[str, Any]:
     required_skills = normalize_skill_list(extract.get("required_skills") or [])
     preferred_skills = normalize_skill_list(extract.get("preferred_skills") or [])
     required_skill_names = unique_preserve([skill["name"] for skill in required_skills])
-    preferred_skill_names = unique_preserve([skill["name"] for skill in preferred_skills])
+    preferred_skill_names = unique_preserve(
+        [skill["name"] for skill in preferred_skills]
+    )
 
     features = MatchingFeatures(
         source=extract.get("source"),
@@ -542,8 +598,12 @@ def build_matching_features_node(state: JobState) -> dict[str, Any]:
         preferred_skill_evidence=preferred_skills,
         field_evidence=[dict(item) for item in extract.get("field_evidence") or []],
         ambiguous_fields=unique_preserve(extract.get("ambiguous_fields") or []),
-        hard_requirements=[dict(item) for item in extract.get("hard_requirements") or []],
-        eligibility_constraints=unique_preserve(extract.get("eligibility_constraints") or []),
+        hard_requirements=[
+            dict(item) for item in extract.get("hard_requirements") or []
+        ],
+        eligibility_constraints=unique_preserve(
+            extract.get("eligibility_constraints") or []
+        ),
     )
     return {"matching_features": features.model_dump()}
 
@@ -568,6 +628,7 @@ def validate_node(state: JobState) -> dict[str, Any]:
         "validation_status": "valid",
         "validation_errors": [],
     }
+
 
 builder = StateGraph(JobState)
 builder.add_node("extract", extract_node)

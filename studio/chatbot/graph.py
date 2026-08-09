@@ -86,6 +86,8 @@ MAX_REQUIREMENTS = 12
 MAX_REQUIREMENT_CHARS = 360
 MAX_ROUTER_CHARS = 12000
 MAX_CONTEXT_MESSAGES = 8
+
+
 async def load_scrape_jobs_tool() -> Any:
     global _JOB_SUBAGENT_SCRAPE_TOOL
     if _JOB_SUBAGENT_SCRAPE_TOOL is None:
@@ -244,7 +246,11 @@ def read_uploaded_cv(uploaded_file: Any) -> str:
 
     filename = str(uploaded_file.get("filename") or uploaded_file.get("name") or "")
     safe_name = Path(filename.replace("\\", "/")).name
-    if not filename or safe_name != filename or Path(safe_name).suffix.casefold() != ".pdf":
+    if (
+        not filename
+        or safe_name != filename
+        or Path(safe_name).suffix.casefold() != ".pdf"
+    ):
         raise ValueError("Only a single .pdf CV upload is supported")
 
     content = uploaded_file.get("content_base64")
@@ -276,7 +282,9 @@ def with_message_content(message: Any, content: str | list[dict[str, Any]]) -> A
             updated["additional_kwargs"] = additional
         elif "additional_kwargs" in updated:
             updated = {
-                key: value for key, value in updated.items() if key != "additional_kwargs"
+                key: value
+                for key, value in updated.items()
+                if key != "additional_kwargs"
             }
         return updated
 
@@ -553,9 +561,7 @@ def compact_scrape_response(raw: Any) -> dict[str, Any]:
 
 def filter_scrape_args(tool: Any, request: dict[str, Any]) -> dict[str, Any]:
     args = {
-        key: value
-        for key, value in request.items()
-        if value not in (None, "", [], {})
+        key: value for key, value in request.items() if value not in (None, "", [], {})
     }
     schema = getattr(tool, "args_schema", None)
     if hasattr(schema, "model_fields"):
@@ -720,10 +726,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         pending_upload = pending_upload_from_messages(messages)
     if pending_upload is None:
         return updates
-    if (
-        isinstance(pending_upload, dict)
-        and pending_upload.get("missing_bytes")
-    ):
+    if isinstance(pending_upload, dict) and pending_upload.get("missing_bytes"):
         return {
             **updates,
             "input_error": True,
@@ -853,7 +856,9 @@ async def run_cv_subagent(state: ConversationState) -> dict[str, Any]:
                     state,
                     [
                         "CV extraction returned invalid output: "
-                        + str(compact.get("validation_errors") or compact.get("warnings"))
+                        + str(
+                            compact.get("validation_errors") or compact.get("warnings")
+                        )
                     ],
                 ),
             }
@@ -948,10 +953,7 @@ async def run_one_job_agent(
 async def process_job_cards(state: ConversationState) -> dict[str, Any]:
     cards = (state.get("selected_job_cards") or [])[:MAX_JOB_EXTRACTIONS]
     results = await asyncio.gather(
-        *(
-            run_one_job_agent(card, state.get("scrape_request"))
-            for card in cards
-        )
+        *(run_one_job_agent(card, state.get("scrape_request")) for card in cards)
     )
     errors = [
         f"Job extraction failed for {item['job_card'].get('title', 'job')}: "
@@ -1110,8 +1112,7 @@ async def respond_node(
         return {"messages": [result], "response": response}
     except Exception as exc:
         response = (
-            "I could not complete the response step. "
-            f"{type(exc).__name__}: {exc}"
+            f"I could not complete the response step. {type(exc).__name__}: {exc}"
         )
         return {
             "messages": [{"role": "assistant", "content": response}],
