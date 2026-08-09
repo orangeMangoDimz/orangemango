@@ -1,0 +1,181 @@
+"""Document application tables and columns."""
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+revision: str = "0005_schema_comments"
+down_revision: Union[str, None] = "0004_cv_documents_extract"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+_TABLE_COMMENTS: dict[str, str] = {
+    "chat_threads": (
+        "Conversation threads that group chat requests, responses, messages, "
+        "and related documents."
+    ),
+    "chat_requests": "User-submitted chat requests and their processing lifecycle.",
+    "chat_responses": (
+        "Generated responses and token usage metrics associated with chat requests."
+    ),
+    "chat_messages": "Ordered transcript messages associated with a conversation thread.",
+    "app_error_logs": "Persisted application error events and request context.",
+    "cv_documents": (
+        "Uploaded CV documents, extracted content, and document processing state."
+    ),
+    "cv_extraction_runs": (
+        "Versioned CV extraction attempts and their structured results."
+    ),
+}
+
+_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
+    "chat_threads": {
+        "id": "Application-defined identifier for the conversation thread.",
+        "status": "Thread lifecycle state, either active or archived.",
+        "created_at": "Timestamp when the thread was created.",
+        "updated_at": "Timestamp when the thread was last updated.",
+    },
+    "cv_documents": {
+        "id": "Unique identifier for the uploaded CV document.",
+        "thread_id": "Optional conversation thread associated with the document.",
+        "request_id": "Optional chat request associated with the document.",
+        "filename": "Original name of the uploaded file.",
+        "storage_key": "Storage location key for the uploaded file.",
+        "sha256": "SHA-256 checksum of the uploaded file.",
+        "mime_type": "MIME type reported for the uploaded file.",
+        "size_bytes": "Size of the uploaded file in bytes.",
+        "extracted_text": "Text extracted from the document when available.",
+        "content": "Raw document bytes stored in the database when available.",
+        "status": (
+            "Document processing state, such as uploaded, processing, completed, "
+            "or failed."
+        ),
+        "uploaded_at": "Timestamp when the document was uploaded.",
+    },
+    "cv_extraction_runs": {
+        "id": "Unique identifier for the extraction run.",
+        "document_id": "CV document processed by this extraction run.",
+        "thread_id": (
+            "Optional conversation thread associated with the extraction run."
+        ),
+        "version": "Extraction version for the document.",
+        "provider": "AI or extraction provider used for this run.",
+        "model": "Extraction model identifier used for this run.",
+        "status": ("Extraction run state, such as processing, completed, or failed."),
+        "validation_status": (
+            "Extraction validation outcome, either valid, invalid, or unset."
+        ),
+        "raw_result": "Raw structured extraction output returned by the provider.",
+        "matching_features": (
+            "Features derived from the extraction for matching or ranking."
+        ),
+        "warnings": "Non-fatal warnings produced during extraction or validation.",
+        "errors": "Errors produced during extraction or validation.",
+        "started_at": "Timestamp when extraction processing started.",
+        "finished_at": "Timestamp when extraction processing finished.",
+    },
+    "chat_requests": {
+        "id": "Unique identifier for the chat request.",
+        "thread_id": "Conversation thread receiving the request.",
+        "message": "User message submitted for processing.",
+        "provider": "AI provider selected for the request.",
+        "model": "AI model selected for the request.",
+        "status": (
+            "Request processing state, such as accepted, processing, completed, "
+            "failed, or cancelled."
+        ),
+        "created_at": "Timestamp when the request was created.",
+        "started_at": "Timestamp when request processing started.",
+        "finished_at": "Timestamp when request processing finished.",
+        "error_code": "Application error code when processing fails.",
+        "error_message": "Human-readable processing error details when available.",
+    },
+    "chat_responses": {
+        "id": "Unique identifier for the response.",
+        "request_id": "Chat request that produced this response.",
+        "content": "Generated response text when available.",
+        "status": "Response state, such as completed, partial, or failed.",
+        "finish_reason": "Provider-reported reason that generation ended.",
+        "input_tokens": "Number of input tokens consumed by the provider.",
+        "output_tokens": "Number of output tokens generated by the provider.",
+        "total_tokens": "Total input and output tokens consumed.",
+        "latency_ms": "Response generation latency in milliseconds.",
+        "provider_request_id": "Provider-side identifier for the request.",
+        "created_at": "Timestamp when the response record was created.",
+        "error_message": "Human-readable response error details when available.",
+    },
+    "chat_messages": {
+        "id": "Unique identifier for the transcript message.",
+        "thread_id": "Conversation thread containing the message.",
+        "request_id": "Optional chat request associated with the message.",
+        "role": "Message author role, such as user, assistant, system, or tool.",
+        "content": "Text content of the message.",
+        "sequence": "Non-negative ordering position within the thread.",
+        "metadata": "Additional structured metadata for the message.",
+        "created_at": "Timestamp when the message was created.",
+    },
+    "app_error_logs": {
+        "id": "Unique identifier for the error log entry.",
+        "level": "Error severity level, either ERROR or CRITICAL.",
+        "message": "Primary error message.",
+        "exception_type": "Exception type when available.",
+        "traceback": "Captured stack trace when available.",
+        "method": "HTTP method associated with the error when available.",
+        "path": "Request path associated with the error when available.",
+        "status_code": (
+            "HTTP response status code associated with the error when available."
+        ),
+        "client_ip": "Client IP address associated with the request when available.",
+        "thread_id": "Conversation thread associated with the error when available.",
+        "request_id": (
+            "Application request identifier associated with the error when available."
+        ),
+        "context": "Structured diagnostic context for the error.",
+        "created_at": "Timestamp when the error was logged.",
+    },
+}
+
+
+def _escape_comment(comment: str) -> str:
+    return comment.replace("'", "''")
+
+
+def _comment_on_table(table_name: str, comment: str) -> None:
+    escaped_comment = _escape_comment(comment)
+    op.execute(sa.text(f"COMMENT ON TABLE {table_name} IS '{escaped_comment}'"))
+
+
+def _comment_on_column(table_name: str, column_name: str, comment: str) -> None:
+    escaped_comment = _escape_comment(comment)
+    op.execute(
+        sa.text(f"COMMENT ON COLUMN {table_name}.{column_name} IS '{escaped_comment}'")
+    )
+
+
+def _clear_table_comment(table_name: str) -> None:
+    op.execute(sa.text(f"COMMENT ON TABLE {table_name} IS NULL"))
+
+
+def _clear_column_comment(table_name: str, column_name: str) -> None:
+    op.execute(sa.text(f"COMMENT ON COLUMN {table_name}.{column_name} IS NULL"))
+
+
+def upgrade() -> None:
+    for table_name, comment in _TABLE_COMMENTS.items():
+        _comment_on_table(table_name, comment)
+
+    for table_name, columns in _COLUMN_COMMENTS.items():
+        for column_name, comment in columns.items():
+            _comment_on_column(table_name, column_name, comment)
+
+
+def downgrade() -> None:
+    for table_name, columns in reversed(tuple(_COLUMN_COMMENTS.items())):
+        for column_name in reversed(tuple(columns)):
+            _clear_column_comment(table_name, column_name)
+
+    for table_name in reversed(tuple(_TABLE_COMMENTS)):
+        _clear_table_comment(table_name)
