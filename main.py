@@ -5,16 +5,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from app.config.const.api_res import (
+    CHAT_API_TAG,
     CHAT_ENDPOINT_DESCRIPTION,
     CHAT_ENDPOINT_SUMMARY,
     CHAT_SERVICE_NOT_CONFIGURED,
     CHAT_THREAD_BUSY,
     CHAT_THREAD_NOT_FOUND,
+    EVENT_API_TAG,
     EVENT_ENDPOINT_DESCRIPTION,
     EVENT_ENDPOINT_SUMMARY,
+    HEALTH_API_TAG,
     HEALTH_ENDPOINT_DESCRIPTION,
     HEALTH_ENDPOINT_SUMMARY,
     HEALTH_STATUS_OK,
+    OPENAPI_TAGS,
     THREAD_ID_MUST_NOT_BE_BLANK,
 )
 from app.config.const.chat import MAX_THREAD_ID_LENGTH
@@ -45,7 +49,11 @@ async def lifespan(_: FastAPI):
             await _chat_service.shutdown()
 
 
-app = FastAPI(title="Orangemango API", lifespan=lifespan)
+app = FastAPI(
+    title="Orangemango API",
+    lifespan=lifespan,
+    openapi_tags=OPENAPI_TAGS,
+)
 configure_middleware(app)
 
 
@@ -96,6 +104,7 @@ async def _format_sse(events: AsyncIterator[object]) -> AsyncIterator[str]:
     response_model=HealthResponse,
     summary=HEALTH_ENDPOINT_SUMMARY,
     description=HEALTH_ENDPOINT_DESCRIPTION,
+    tags=[HEALTH_API_TAG],
 )
 async def healthz() -> HealthResponse:
     return HealthResponse(status=HEALTH_STATUS_OK)
@@ -107,6 +116,7 @@ async def healthz() -> HealthResponse:
     status_code=202,
     summary=CHAT_ENDPOINT_SUMMARY,
     description=CHAT_ENDPOINT_DESCRIPTION,
+    tags=[CHAT_API_TAG],
 )
 async def post_message(
     request: MessageRequest,
@@ -128,6 +138,7 @@ async def post_message(
     response_class=StreamingResponse,
     summary=EVENT_ENDPOINT_SUMMARY,
     description=EVENT_ENDPOINT_DESCRIPTION,
+    tags=[EVENT_API_TAG],
 )
 async def get_events(
     thread_id: str = Query(..., min_length=1, max_length=MAX_THREAD_ID_LENGTH),
