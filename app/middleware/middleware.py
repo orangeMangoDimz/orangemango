@@ -29,6 +29,7 @@ _DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
 )
 _RATE_LIMITED_PATH = "/message"
+_CV_PATH_PREFIX = "/cv"
 _MAX_TRACKED_CLIENTS = 10_000
 
 
@@ -105,7 +106,11 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        if request.method != "POST" or request.url.path != _RATE_LIMITED_PATH:
+        if request.method != "POST" or (
+            request.url.path != _RATE_LIMITED_PATH
+            and request.url.path != _CV_PATH_PREFIX
+            and not request.url.path.startswith(f"{_CV_PATH_PREFIX}/")
+        ):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"

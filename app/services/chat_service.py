@@ -27,6 +27,8 @@ from app.repositories.chat_repository import (
     ChatRepository,
     ThreadNotFoundError,
 )
+from app.repositories.cv_repository import CvRepository
+from app.services.cv_service import CvService
 
 _MAX_SERIALIZED_TEXT = 4000
 _MAX_SERIALIZED_ITEMS = 64
@@ -100,12 +102,14 @@ class ChatService:
         provider: str = "openai",
         model_name: str = "unknown",
         chat_model: ChatModel | None = None,
+        cv_service: CvService | None = None,
     ) -> None:
         self._repository = repository
         self._database = database
         self._provider = provider
         self._model_name = model_name
         self._chat_model = chat_model
+        self._cv_service = cv_service
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._startup_lock = asyncio.Lock()
         self._checkpointer_stack: AsyncExitStack | None = None
@@ -114,16 +118,29 @@ class ChatService:
     def from_environment(cls) -> ChatService:
         model = ChatModel.from_env()
         database = Database.from_environment()
+        repository = ChatRepository(
+            graph=None,
+            session_factory=database.session_factory,
+        )
         return cls(
-            ChatRepository(
-                graph=None,
-                session_factory=database.session_factory,
-            ),
+            repository,
             database=database,
             provider=model.provider,
             model_name=model.model_name,
             chat_model=model,
+            cv_service=CvService(
+                event_repository=repository,
+                repository=CvRepository(
+                    session_factory=database.session_factory,
+                ),
+            ),
         )
+
+    @property
+    def cv_service(self) -> CvService:
+        if self._cv_service is None:
+            raise ChatPersistenceError("CV service is not configured")
+        return self._cv_service
 
     async def startup(self) -> None:
         """Initialize the durable LangGraph checkpointer once per service."""
@@ -370,6 +387,8 @@ class ChatService:
                 self._tasks.pop(thread_id, None)
 
     async def shutdown(self) -> None:
+        if self._cv_service is not None:
+            await self._cv_service.shutdown()
         tasks = list(self._tasks.values())
         for task in tasks:
             task.cancel()

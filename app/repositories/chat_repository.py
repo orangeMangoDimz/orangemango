@@ -19,10 +19,11 @@ from app.db.models import (
     ChatRequest as ChatRequestRecord,
     ChatResponse as ChatResponseRecord,
     ChatThread,
+    CvExtraction as CvExtractionRecord,
 )
 
 
-EventType = Literal["state", "message", "error", "done"]
+EventType = Literal["state", "message", "cv_extraction", "error", "done"]
 
 
 class ThreadNotFoundError(LookupError):
@@ -100,6 +101,17 @@ class ChatRepository:
                             thread.status = "active"
                             thread.updated_at = now
 
+                        active_cv = await session.execute(
+                            select(CvExtractionRecord.id)
+                            .where(
+                                CvExtractionRecord.thread_id == thread_id,
+                                CvExtractionRecord.status == "processing",
+                            )
+                            .limit(1)
+                        )
+                        if active_cv.scalar_one_or_none() is not None:
+                            raise ChatRequestBusyError(thread_id)
+
                         request = ChatRequestRecord(
                             thread_id=thread_id,
                             message=message,
@@ -124,6 +136,8 @@ class ChatRepository:
                                 created_at=now,
                             )
                         )
+            except ChatRequestBusyError:
+                raise
             except IntegrityError as exc:
                 if "uq_active_chat_request_per_thread" in str(exc):
                     raise ChatRequestBusyError(thread_id) from exc
@@ -135,6 +149,63 @@ class ChatRepository:
             record.active = True
             record.request_id = request.id
             return request.id
+
+    async def begin_activity(self, thread_id: str) -> None:
+        """Reserve a thread for a non-chat operation such as CV extraction."""
+        async with self._lock:
+            record = self._threads.setdefault(thread_id, ThreadRecord())
+            if record.active:
+                raise ChatRequestBusyError(thread_id)
+
+            now = datetime.now(UTC)
+            try:
+                async with self._session_factory() as session:
+                    async with session.begin():
+                        thread = await session.get(ChatThread, thread_id)
+                        if thread is None:
+                            session.add(
+                                ChatThread(
+                                    id=thread_id,
+                                    created_at=now,
+                                    updated_at=now,
+                                )
+                            )
+                            await session.flush()
+                        else:
+                            thread.status = "active"
+                            thread.updated_at = now
+
+                        active_chat = await session.execute(
+                            select(ChatRequestRecord.id)
+                            .where(
+                                ChatRequestRecord.thread_id == thread_id,
+                                ChatRequestRecord.status.in_(
+                                    ("accepted", "processing")
+                                ),
+                            )
+                            .limit(1)
+                        )
+                        if active_chat.scalar_one_or_none() is not None:
+                            raise ChatRequestBusyError(thread_id)
+
+                        active_cv = await session.execute(
+                            select(CvExtractionRecord.id)
+                            .where(
+                                CvExtractionRecord.thread_id == thread_id,
+                                CvExtractionRecord.status == "processing",
+                            )
+                            .limit(1)
+                        )
+                        if active_cv.scalar_one_or_none() is not None:
+                            raise ChatRequestBusyError(thread_id)
+            except ChatRequestBusyError:
+                raise
+            except SQLAlchemyError as exc:
+                raise ChatPersistenceError("Unable to reserve chat thread") from exc
+
+            record.events.clear()
+            record.active = True
+            record.request_id = None
 
     async def has_thread(self, thread_id: str) -> bool:
         async with self._lock:
@@ -188,6 +259,7 @@ class ChatRepository:
             record = self._threads.get(thread_id)
             if record is not None:
                 record.active = False
+                record.request_id = None
 
     async def mark_processing(self, request_id: UUID) -> None:
         now = datetime.now(UTC)

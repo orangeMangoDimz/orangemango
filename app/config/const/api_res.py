@@ -23,15 +23,33 @@ CHAT_THREAD_NOT_FOUND = "Chat thread was not found"
 CHAT_THREAD_BUSY = "A message is already being processed for this thread"
 CHAT_STREAM_ERROR = "Unable to complete the response."
 
+# [CV Endpoints]
+CV_API_TAG = "CV"
+CV_UPLOAD_SUMMARY = "Upload a CV"
+CV_UPLOAD_DESCRIPTION = "Store a PDF CV and return its identifier."
+CV_EXTRACTION_SUMMARY = "Start CV extraction"
+CV_EXTRACTION_DESCRIPTION = (
+    "Start asynchronous extraction for a stored CV. Results are available from "
+    "the thread event stream."
+)
+CV_EXTRACTION_RESULT_SUMMARY = "Get CV extraction"
+CV_EXTRACTION_RESULT_DESCRIPTION = "Return the persisted CV extraction result."
+CV_FILE_MUST_BE_PDF = "Only PDF CV files are supported"
+CV_FILE_TOO_LARGE = "CV file exceeds the 10 MB limit"
+CV_FILE_INVALID = "The uploaded CV is not a valid PDF"
+CV_FILE_EMPTY = "The uploaded CV is empty"
+CV_NOT_FOUND = "CV was not found"
+CV_EXTRACTION_NOT_FOUND = "CV extraction was not found"
+CV_EXTRACTION_BUSY = "A CV extraction is already active for this thread"
+CV_EXTRACTION_ERROR = "Unable to complete CV extraction"
+
 # [Chat Statuses]
 MESSAGE_ACCEPTED = "accepted"
 MESSAGE_STATUS_FAILED = "failed"
 MESSAGE_STATUS_COMPLETED = "completed"
 
 # [Events Endpoint]
-EVENT_ENDPOINT_DESCRIPTION = (
-    "Streams LangGraph state and assistant response events for a chat thread."
-)
+EVENT_ENDPOINT_DESCRIPTION = "Streams chat and CV extraction events for a thread."
 EVENT_ENDPOINT_SUMMARY = "Stream chat events"
 EVENT_API_TAG = "Events"
 
@@ -52,6 +70,10 @@ OPENAPI_TAGS = [
     {
         "name": CHAT_API_TAG,
         "description": "Start chat response runs.",
+    },
+    {
+        "name": CV_API_TAG,
+        "description": "Upload CVs and start structured CV extraction.",
     },
     {
         "name": EVENT_API_TAG,
