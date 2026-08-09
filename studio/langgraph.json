@@ -1,0 +1,11 @@
+{
+  "dependencies": [".."],
+  "graphs": {
+    "cv-extraction": "./cv-extraction/graph.py:graph",
+    "job-extraction": "./job-extraction/graph.py:graph",
+    "matching-score": "./matching-score/graph.py:graph",
+    "orchestrator": "./orchestrator/graph.py:graph",
+    "cv-job-chatbot": "./chatbot/graph.py:graph"
+  },
+  "env": "../.env"
+}
