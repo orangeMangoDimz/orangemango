@@ -25,6 +25,7 @@ from app.config.const.chat import MAX_THREAD_ID_LENGTH
 from app.data.schema.request import MessageRequest
 from app.data.schema.response import AcceptedMessageResponse, HealthResponse
 from app.db.session import DatabaseConfigurationError
+from app.logger import configure_logging, log_exception, logger
 from app.models.chat_model import ChatConfigurationError
 from app.repositories.chat_repository import ChatPersistenceError
 from app.services.chat_service import (
@@ -33,20 +34,24 @@ from app.services.chat_service import (
     ChatThreadNotFoundError,
 )
 from app.middleware.middleware import configure_middleware
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
+
+configure_logging()
 
 _chat_service: ChatService | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    logger.info("Orangemango API starting")
     try:
         yield
     finally:
         if _chat_service is not None:
             await _chat_service.shutdown()
+        logger.info("Orangemango API stopped")
 
 
 app = FastAPI(
@@ -55,6 +60,24 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
 )
 configure_middleware(app)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    log_exception(
+        "Unhandled API exception",
+        exc=exc,
+        request=request,
+        status_code=500,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
 
 
 def get_chat_service() -> ChatService:
@@ -150,6 +173,11 @@ async def get_events(
         await service.ensure_thread(normalized_thread_id)
     except ChatThreadNotFoundError as exc:
         raise HTTPException(status_code=404, detail=CHAT_THREAD_NOT_FOUND) from exc
+    except ChatPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=CHAT_SERVICE_NOT_CONFIGURED,
+        ) from exc
 
     return StreamingResponse(
         _format_sse(

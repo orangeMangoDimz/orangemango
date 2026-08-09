@@ -15,6 +15,7 @@ from app.config.const.chat import (
     CHAT_RATE_LIMIT_REQUESTS,
     CHAT_RATE_LIMIT_WINDOW_SECONDS,
 )
+from app.logger import log_exception, logger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -35,6 +36,47 @@ def _get_allowed_origins() -> list[str]:
     configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
     origins = [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
     return origins or list(_DEFAULT_CORS_ORIGINS)
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        started_at = monotonic()
+        client_ip = request.client.host if request.client else "unknown"
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            duration_ms = max(0, round((monotonic() - started_at) * 1000))
+            logger.opt(exception=exc).error(
+                "Unhandled request failure {method} {path} ({duration_ms}ms) ip={client_ip}",
+                method=request.method,
+                path=request.url.path,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+            )
+            raise
+
+        duration_ms = max(0, round((monotonic() - started_at) * 1000))
+        logger.info(
+            "{method} {path} -> {status} ({duration_ms}ms) ip={client_ip}",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=duration_ms,
+            client_ip=client_ip,
+        )
+        if response.status_code >= 500:
+            log_exception(
+                "API returned server error",
+                request=request,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+            )
+        return response
 
 
 class ChatRateLimitMiddleware(BaseHTTPMiddleware):
@@ -78,6 +120,11 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
                     1,
                     math.ceil(timestamps[0] + self.window_seconds - now),
                 )
+                logger.warning(
+                    "Rate limit exceeded for {client_ip} on {path}",
+                    client_ip=client_ip,
+                    path=request.url.path,
+                )
                 return JSONResponse(
                     status_code=429,
                     content={"detail": TOO_MANY_CHAT_REQUESTS},
@@ -96,7 +143,7 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
 
 
 def configure_middleware(app: FastAPI) -> None:
-    # Add the limiter first so CORS remains the outer layer and decorates 429 responses.
+    app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         ChatRateLimitMiddleware,
         max_requests=CHAT_RATE_LIMIT_REQUESTS,
