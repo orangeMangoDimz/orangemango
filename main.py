@@ -13,6 +13,8 @@ from app.config.const.api_res import (
     CHAT_THREAD_BUSY,
     CHAT_THREAD_NOT_FOUND,
     CV_API_TAG,
+    CV_TEXT_EXTRACTION_DESCRIPTION,
+    CV_TEXT_EXTRACTION_SUMMARY,
     CV_EXTRACTION_BUSY,
     CV_EXTRACTION_DESCRIPTION,
     CV_EXTRACTION_NOT_FOUND,
@@ -39,6 +41,7 @@ from app.data.schema.response import (
     AcceptedCvExtractionResponse,
     AcceptedMessageResponse,
     CvExtractionResponse,
+    CvProcessResponse,
     CvUploadResponse,
     HealthResponse,
 )
@@ -47,6 +50,7 @@ from app.logger import configure_logging, log_exception, logger
 from app.models.chat_model import ChatConfigurationError
 from app.repositories.chat_repository import ChatPersistenceError
 from app.repositories.cv_repository import (
+    CvExtractionBusyError,
     CvExtractionNotFoundError,
     CvNotFoundError,
     CvPersistenceError,
@@ -227,6 +231,34 @@ async def upload_cv(
         ) from exc
     finally:
         await file.close()
+
+
+@app.post(
+    "/cv/{cv_id}/extract-text",
+    response_model=CvProcessResponse,
+    summary=CV_TEXT_EXTRACTION_SUMMARY,
+    description=CV_TEXT_EXTRACTION_DESCRIPTION,
+    tags=[CV_API_TAG],
+    dependencies=[Depends(require_api_token)],
+)
+async def process_cv(
+    cv_id: UUID,
+    service: CvService = Depends(get_cv_service),
+) -> CvProcessResponse:
+    try:
+        await service.process_cv(cv_id)
+    except CvNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=CV_NOT_FOUND) from exc
+    except CvInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except CvExtractionBusyError as exc:
+        raise HTTPException(status_code=409, detail=CV_EXTRACTION_BUSY) from exc
+    except CvPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=CHAT_SERVICE_NOT_CONFIGURED,
+        ) from exc
+    return CvProcessResponse(status="ok")
 
 
 @app.post(

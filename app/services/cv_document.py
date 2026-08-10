@@ -6,6 +6,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.config.const.api_res import (
+    CV_EXTRACTED_TEXT_EMPTY,
     CV_FILE_EMPTY,
     CV_FILE_INVALID,
     CV_FILE_MUST_BE_PDF,
@@ -16,6 +17,14 @@ from app.config.const.chat import MAX_CV_FILE_BYTES, MAX_CV_FILENAME_LENGTH
 
 class CvInputError(ValueError):
     """Raised when an uploaded CV fails validation or text extraction."""
+
+
+def validate_extracted_text(value: str | None) -> str:
+    """Return normalized extracted text or reject an empty value."""
+    normalized = (value or "").strip()
+    if not normalized:
+        raise CvInputError(CV_EXTRACTED_TEXT_EMPTY)
+    return normalized
 
 
 def validate_pdf_upload(
@@ -67,6 +76,4 @@ def extract_pdf_text(content: bytes) -> str:
     except Exception as exc:
         raise CvInputError(CV_FILE_INVALID) from exc
 
-    if not text:
-        raise CvInputError("No text could be extracted from the CV PDF")
-    return text
+    return validate_extracted_text(text)

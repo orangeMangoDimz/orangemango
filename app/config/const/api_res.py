@@ -32,12 +32,17 @@ CV_EXTRACTION_DESCRIPTION = (
     "Start asynchronous extraction for a stored CV. Results are available from "
     "the thread event stream."
 )
+CV_TEXT_EXTRACTION_SUMMARY = "Process a CV synchronously"
+CV_TEXT_EXTRACTION_DESCRIPTION = (
+    "Extract CV text, run the CV agent, and persist the extraction result."
+)
 CV_EXTRACTION_RESULT_SUMMARY = "Get CV extraction"
 CV_EXTRACTION_RESULT_DESCRIPTION = "Return the persisted CV extraction result."
 CV_FILE_MUST_BE_PDF = "Only PDF CV files are supported"
 CV_FILE_TOO_LARGE = "CV file exceeds the 10 MB limit"
 CV_FILE_INVALID = "The uploaded CV is not a valid PDF"
 CV_FILE_EMPTY = "The uploaded CV is empty"
+CV_EXTRACTED_TEXT_EMPTY = "No text could be extracted from the CV PDF"
 CV_NOT_FOUND = "CV was not found"
 CV_EXTRACTION_NOT_FOUND = "CV extraction was not found"
 CV_EXTRACTION_BUSY = "A CV extraction is already active for this thread"

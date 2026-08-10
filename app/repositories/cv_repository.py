@@ -45,6 +45,7 @@ class CvRepository:
         filename: str,
         content_type: str,
         content: bytes,
+        extracted_text: str | None = None,
     ) -> CvDocument:
         record = CvDocument(
             filename=filename,
@@ -52,6 +53,7 @@ class CvRepository:
             sha256=hashlib.sha256(content).hexdigest(),
             mime_type=content_type,
             size_bytes=len(content),
+            extracted_text=extracted_text,
             content=content,
         )
         record.storage_key = f"db://cv/{record.id}"
@@ -74,11 +76,29 @@ class CvRepository:
             raise CvNotFoundError(str(cv_id))
         return record
 
+    async def update_extracted_text(
+        self,
+        cv_id: UUID,
+        *,
+        extracted_text: str,
+    ) -> None:
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    record = await session.get(CvDocument, cv_id)
+                    if record is None:
+                        raise CvNotFoundError(str(cv_id))
+                    record.extracted_text = extracted_text
+        except CvNotFoundError:
+            raise
+        except SQLAlchemyError as exc:
+            raise CvPersistenceError("Unable to persist extracted CV text") from exc
+
     async def create_extraction(
         self,
         *,
         cv_id: UUID,
-        thread_id: str,
+        thread_id: str | None,
     ) -> CvExtraction:
         record = CvExtraction(
             document_id=cv_id,
@@ -137,9 +157,21 @@ class CvRepository:
                         raise CvExtractionNotFoundError(str(extraction_id))
                     record.status = "completed"
                     record.extraction_result = result
+                    matching_features = result.get("matching_features")
+                    record.matching_features = (
+                        matching_features
+                        if isinstance(matching_features, dict)
+                        else {}
+                    )
                     record.warnings = warnings
                     record.errors = []
-                    record.validation_status = "valid"
+                    validation_status = result.get("validation_status")
+                    record.validation_status = (
+                        validation_status
+                        if isinstance(validation_status, str)
+                        and validation_status in {"valid", "invalid"}
+                        else None
+                    )
                     record.finished_at = now
         except CvExtractionNotFoundError:
             raise

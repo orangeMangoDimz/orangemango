@@ -41,8 +41,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # [Network]
 # Documents the port exposed by the API container.
-EXPOSE 8000
+ARG API_PORT=8000
+EXPOSE ${API_PORT}
 
 # [Startup]
 # Applies database migrations before starting the API server.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port ${API_PORT:-8000}"]
