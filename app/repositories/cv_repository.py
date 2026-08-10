@@ -159,9 +159,7 @@ class CvRepository:
                     record.extraction_result = result
                     matching_features = result.get("matching_features")
                     record.matching_features = (
-                        matching_features
-                        if isinstance(matching_features, dict)
-                        else {}
+                        matching_features if isinstance(matching_features, dict) else {}
                     )
                     record.warnings = warnings
                     record.errors = []
