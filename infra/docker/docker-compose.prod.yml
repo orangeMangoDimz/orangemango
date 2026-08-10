@@ -8,4 +8,4 @@ services:
     restart: unless-stopped
     # Keep the API reachable by the host Nginx proxy only.
     ports: !override
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:${API_PORT:-8000}"
