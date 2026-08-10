@@ -297,7 +297,7 @@ jobs:
           REMOTE_SCRIPT
 
       # [Nginx Reverse Proxy]
-      # Publishes the API on port 80 while keeping port 8000 private.
+      # Publishes the API on port 80 while keeping the configured API port private.
       - name: Configure Nginx reverse proxy
         shell: bash
         run: |
@@ -313,7 +313,17 @@ jobs:
           nginx_rendered="$(mktemp)"
           trap 'rm -f "$nginx_rendered"' EXIT
 
-          sed "s|__VPS_HOST__|$vps_host|g" "$nginx_source" > "$nginx_rendered"
+          api_port="$(awk -F= '/^[[:space:]]*API_PORT[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$deploy_path/.env")"
+          api_port="${api_port:-8000}"
+          if [[ ! "$api_port" =~ ^[0-9]+$ ]] || (( api_port < 1 || api_port > 65535 )); then
+            printf 'Invalid API_PORT: %s\n' "$api_port" >&2
+            exit 1
+          fi
+
+          sed \
+            -e "s|__VPS_HOST__|$vps_host|g" \
+            -e "s|__API_PORT__|$api_port|g" \
+            "$nginx_source" > "$nginx_rendered"
           sudo -n install -m 644 "$nginx_rendered" "$nginx_target"
           sudo -n ln -sfn "$nginx_target" "$nginx_link"
           sudo -n nginx -t
