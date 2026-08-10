@@ -23,6 +23,10 @@ class CvUploadResponse(BaseModel):
     status: Literal["uploaded"]
 
 
+class CvProcessResponse(BaseModel):
+    status: Literal["ok"]
+
+
 class AcceptedCvExtractionResponse(BaseModel):
     extraction_id: UUID
     cv_id: UUID

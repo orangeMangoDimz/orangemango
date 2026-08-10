@@ -28,7 +28,11 @@ from app.repositories.cv_repository import (
     CvPersistenceError,
     CvRepository,
 )
-from app.services.cv_document import extract_pdf_text, validate_pdf_upload
+from app.services.cv_document import (
+    extract_pdf_text,
+    validate_extracted_text,
+    validate_pdf_upload,
+)
 
 
 class CvThreadBusyError(RuntimeError):
@@ -112,10 +116,12 @@ class CvService:
             content_type=content_type,
             content=content,
         )
+        extracted_text = extract_pdf_text(content)
         record = await self._repository.create_document(
             filename=safe_name,
             content_type="application/pdf",
             content=content,
+            extracted_text=extracted_text,
         )
         return CvUploadResponse(
             cv_id=record.id,
@@ -124,6 +130,38 @@ class CvService:
             file_size=record.size_bytes,
             status="uploaded",
         )
+
+    async def process_cv(self, cv_id: UUID) -> None:
+        """Synchronously extract and persist one CV."""
+        cv_text = await self._get_extracted_text(cv_id)
+        extraction = await self._repository.create_extraction(
+            cv_id=cv_id,
+            thread_id=None,
+        )
+        try:
+            await self._repository.mark_processing(extraction.id)
+            await self._run_agent(
+                cv_text=cv_text,
+                extraction_id=extraction.id,
+            )
+        except asyncio.CancelledError:
+            await self._persist_failed_run(
+                extraction_id=extraction.id,
+                cv_id=cv_id,
+            )
+            raise
+        except Exception as exc:
+            log_exception(
+                "Synchronous CV extraction failed",
+                exc=exc,
+                cv_id=str(cv_id),
+                extraction_id=str(extraction.id),
+            )
+            await self._persist_failed_run(
+                extraction_id=extraction.id,
+                cv_id=cv_id,
+            )
+            raise
 
     async def accept_extraction(
         self,
@@ -197,6 +235,35 @@ class CvService:
             finished_at=record.finished_at,
         )
 
+    async def _get_extracted_text(self, cv_id: UUID) -> str:
+        document = await self._repository.get_document(cv_id)
+        if document.extracted_text and document.extracted_text.strip():
+            return validate_extracted_text(document.extracted_text)
+
+        extracted_text = extract_pdf_text(document.content or b"")
+        await self._repository.update_extracted_text(
+            cv_id,
+            extracted_text=extracted_text,
+        )
+        persisted = await self._repository.get_document(cv_id)
+        return validate_extracted_text(persisted.extracted_text)
+
+    async def _run_agent(
+        self,
+        *,
+        cv_text: str,
+        extraction_id: UUID,
+    ) -> dict[str, Any]:
+        graph = _load_cv_graph()
+        raw_result = await graph.ainvoke({"cv_text": cv_text})
+        result = _result_without_source_text(raw_result)
+        await self._repository.complete_extraction(
+            extraction_id,
+            result=result,
+            warnings=_result_warnings(result),
+        )
+        return result
+
     async def _run_extraction(
         self,
         *,
@@ -206,17 +273,10 @@ class CvService:
     ) -> None:
         try:
             await self._repository.mark_processing(extraction_id)
-            document = await self._repository.get_document(cv_id)
-            cv_text = extract_pdf_text(document.content or b"")
-            graph = _load_cv_graph()
-            raw_result = await graph.ainvoke({"cv_text": cv_text})
-            result = _result_without_source_text(raw_result)
-            warnings = _result_warnings(result)
-
-            await self._repository.complete_extraction(
-                extraction_id,
-                result=result,
-                warnings=warnings,
+            cv_text = await self._get_extracted_text(cv_id)
+            result = await self._run_agent(
+                cv_text=cv_text,
+                extraction_id=extraction_id,
             )
             await self._event_repository.publish(
                 thread_id,
@@ -267,13 +327,13 @@ class CvService:
             if self._tasks.get(thread_id) is current_task:
                 self._tasks.pop(thread_id, None)
 
-    async def _fail_run(
+    async def _persist_failed_run(
         self,
         *,
         extraction_id: UUID,
-        thread_id: str,
         cv_id: UUID,
-        error: str,
+        thread_id: str | None = None,
+        error: str = CV_EXTRACTION_ERROR,
     ) -> None:
         try:
             await self._repository.fail_extraction(
@@ -288,6 +348,21 @@ class CvService:
                 extraction_id=str(extraction_id),
                 thread_id=thread_id,
             )
+
+    async def _fail_run(
+        self,
+        *,
+        extraction_id: UUID,
+        thread_id: str,
+        cv_id: UUID,
+        error: str,
+    ) -> None:
+        await self._persist_failed_run(
+            extraction_id=extraction_id,
+            cv_id=cv_id,
+            thread_id=thread_id,
+            error=error,
+        )
 
         try:
             await self._event_repository.publish(
