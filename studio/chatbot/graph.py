@@ -80,8 +80,6 @@ JOB_SUBAGENT_MCP_CLIENT = MultiServerMCPClient(
 _JOB_SUBAGENT_SCRAPE_TOOL: Any | None = None
 
 MAX_PDF_BYTES = MAX_CV_FILE_BYTES
-MAX_JOB_CARDS = 12
-MAX_JOB_EXTRACTIONS = 5
 MAX_FIELD_CHARS = 800
 MAX_REQUIREMENTS = 12
 MAX_REQUIREMENT_CHARS = 360
@@ -363,7 +361,14 @@ def add_chat_messages(
     return add_messages(left or [], sanitized_right)
 
 
-RouteName = Literal["respond", "extract_cv", "search_jobs", "match_jobs"]
+RouteName = Literal[
+    "respond",
+    "extract_cv",
+    "extract_job",
+    "search_jobs",
+    "match_jobs",
+]
+JobSource = Literal["none", "existing", "search", "pasted"]
 
 
 class ScrapeRequest(BaseModel):
@@ -375,6 +380,17 @@ class ScrapeRequest(BaseModel):
 class RouteDecision(BaseModel):
     route: RouteName
     reason: str = Field(min_length=1, max_length=300)
+    job_source: JobSource = Field(
+        default="none",
+        description=(
+            "Where the job input comes from: existing loaded jobs, a web search, "
+            "or a job description pasted in the latest user message."
+        ),
+    )
+    score_requested: bool = Field(
+        default=False,
+        description="True only when the user explicitly asks for matching or a score.",
+    )
     needs_cv_text: bool = Field(
         default=False,
         description=(
@@ -395,12 +411,13 @@ class ConversationState(TypedDict, total=False):
     cv_features: dict[str, Any] | None
     route: RouteName
     route_reason: str | None
+    job_source: JobSource
+    job_input_text: str | None
+    score_requested: bool
     needs_cv_text: bool
     scrape_request: dict[str, Any] | None
     scrape_total: int
     scrape_truncated: bool
-    job_cards: list[dict[str, Any]]
-    selected_job_cards: list[dict[str, Any]]
     job_results: list[dict[str, Any]]
     matches: list[dict[str, Any]]
     response: str | None
@@ -475,7 +492,7 @@ def extract_job_payloads(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload.get("job"), dict):
         return [payload["job"]]
 
-    for key in ("jobs", "results", "items"):
+    for key in ("jobs", "results", "items", "sites"):
         value = payload.get(key)
         if isinstance(value, list):
             return extract_job_payloads(value)
@@ -549,9 +566,12 @@ def compact_scrape_response(raw: Any) -> dict[str, Any]:
 
     return {
         "total": len(cards),
-        "truncated": len(cards) > MAX_JOB_CARDS,
-        "cards": cards[:MAX_JOB_CARDS],
-        "selected_cards": cards[:MAX_JOB_EXTRACTIONS],
+        "truncated": bool(
+            envelope.get("truncated")
+            or envelope.get("is_truncated")
+            or envelope.get("has_more")
+        ),
+        "cards": cards,
         "errors": short_list(envelope.get("errors"), 5, 300),
     }
 
@@ -618,8 +638,22 @@ def compact_cv_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_job_result(card: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    extract = result.get("extract") or {}
+    enriched_card = dict(card)
+    if not enriched_card.get("title"):
+        enriched_card["title"] = (
+            extract.get("normalized_title")
+            or extract.get("raw_title")
+            or "Pasted job description"
+        )
+    if not enriched_card.get("company"):
+        enriched_card["company"] = extract.get("company") or ""
+    if not enriched_card.get("url"):
+        enriched_card["url"] = extract.get("job_url") or ""
+    if not enriched_card.get("site"):
+        enriched_card["site"] = extract.get("source") or ""
     return {
-        "job_card": card,
+        "job_card": enriched_card,
         "matching_features": result.get("matching_features"),
         "validation_status": result.get("validation_status"),
         "validation_errors": short_list(result.get("validation_errors"), 5, 300),
@@ -693,6 +727,9 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         "pending_cv_upload": None,
         "input_error": False,
         "cv_needs_extraction": False,
+        "job_source": "none",
+        "job_input_text": None,
+        "score_requested": False,
         "needs_cv_text": False,
         "response": None,
         "errors": [],
@@ -748,7 +785,6 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
             "cv_needs_extraction": True,
             "cv_result": None,
             "cv_features": None,
-            "job_results": [],
         }
     )
     return updates
@@ -758,9 +794,22 @@ ROUTER_PROMPT = """You route a conversational CV and job-search assistant.
 
 Choose exactly one route:
 - extract_cv: analyze or update the CV already uploaded in this thread.
+- extract_job: extract and summarize a job description pasted in the latest message.
 - search_jobs: find, scrape, search, or refresh job postings.
-- match_jobs: identify which available jobs fit the uploaded CV or request a match score.
+- match_jobs: identify which available or pasted jobs fit the uploaded CV or provide a
+  requested match score.
 - respond: general conversation or questions about already-loaded results.
+
+Also set job_source:
+- pasted: the latest message contains a job posting or job description to analyze.
+- search: the user explicitly wants current, similar, or external job postings.
+- existing: the user refers to jobs already loaded in this thread.
+- none: no job input is involved.
+
+If pasted job text and a request for similar or current jobs appear together, use
+search as the job_source and search_jobs as the route. Use extract_job for pasted
+job text when no score is requested. Set score_requested=true only when the user
+explicitly asks to match, compare, rank, calculate, or score a job against the CV.
 
 Set needs_cv_text=true only when the reply must use the raw CV wording or sections
 (ambiguity, rewrite feedback, quote experience, review a specific part). Leave it
@@ -782,6 +831,9 @@ async def route_message(
         return {
             "route": "respond",
             "route_reason": "No user message was provided.",
+            "job_source": "none",
+            "job_input_text": None,
+            "score_requested": False,
             "needs_cv_text": False,
         }
 
@@ -791,7 +843,7 @@ async def route_message(
         "latest_user_message": latest[:MAX_ROUTER_CHARS],
         "cv_available": bool(state.get("cv_features")),
         "cv_text_available": bool((state.get("cv_text") or "").strip()),
-        "job_count": len(state.get("job_cards") or []),
+        "job_count": len(state.get("job_results") or []),
         "processed_job_count": len(state.get("job_results") or []),
     }
     try:
@@ -808,9 +860,15 @@ async def route_message(
         needs_cv_text = bool(decision.needs_cv_text) and bool(
             (state.get("cv_text") or "").strip()
         )
+        job_source = decision.job_source
+        if decision.route == "extract_job":
+            job_source = "pasted"
         return {
             "route": decision.route,
             "route_reason": decision.reason,
+            "job_source": job_source,
+            "job_input_text": latest if job_source == "pasted" else None,
+            "score_requested": bool(decision.score_requested),
             "needs_cv_text": needs_cv_text,
             "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
         }
@@ -818,6 +876,9 @@ async def route_message(
         return {
             "route": "respond",
             "route_reason": "Router failed; using the conversational fallback.",
+            "job_source": "none",
+            "job_input_text": None,
+            "score_requested": False,
             "needs_cv_text": False,
             "errors": state_errors(
                 state,
@@ -904,21 +965,23 @@ async def scrape_jobs_with_mcp(state: ConversationState) -> dict[str, Any]:
         request = dict(state.get("scrape_request") or {})
         raw = await tool.ainvoke(filter_scrape_args(tool, request))
         compact = compact_scrape_response(raw)
+        job_results, extraction_errors = await extract_job_cards(
+            compact["cards"], request
+        )
         return {
             "scrape_total": compact["total"],
             "scrape_truncated": compact["truncated"],
-            "job_cards": compact["cards"],
-            "selected_job_cards": compact["selected_cards"],
-            "job_results": [],
+            "job_results": job_results,
             "matches": [],
-            "errors": state_errors(state, compact["errors"]),
+            "errors": state_errors(
+                state,
+                compact["errors"] + extraction_errors,
+            ),
         }
     except Exception as exc:
         return {
             "scrape_total": 0,
             "scrape_truncated": False,
-            "job_cards": [],
-            "selected_job_cards": [],
             "job_results": [],
             "matches": [],
             "errors": state_errors(
@@ -947,10 +1010,61 @@ async def run_one_job_agent(
         }
 
 
-async def process_job_cards(state: ConversationState) -> dict[str, Any]:
-    cards = (state.get("selected_job_cards") or [])[:MAX_JOB_EXTRACTIONS]
+def pasted_job_card(text: str) -> dict[str, Any]:
+    return {
+        "title": "",
+        "company": "",
+        "location": "",
+        "url": "",
+        "salary": "",
+        "posted_date": "",
+        "posted_at": "",
+        "work_type": "",
+        "employment_type": "",
+        "experience_level": "",
+        "description": text,
+        "requirements": [],
+        "site": "user_pasted",
+        "scrape_errors": [],
+    }
+
+
+async def extract_pasted_job(state: ConversationState) -> dict[str, Any]:
+    text = (state.get("job_input_text") or "").strip()
+    if not text:
+        return {
+            "job_results": [],
+            "matches": [],
+            "errors": state_errors(
+                state,
+                ["A pasted job description was not available for extraction."],
+            ),
+        }
+
+    card = pasted_job_card(text)
+    result = await run_one_job_agent(card, None)
+    errors: list[str] = []
+    if result.get("validation_status") != "valid":
+        errors.append(
+            "Pasted job extraction failed: "
+            + str(result.get("validation_errors") or result.get("warnings"))
+        )
+
+    return {
+        "scrape_total": 0,
+        "scrape_truncated": False,
+        "job_results": [result],
+        "matches": [],
+        "errors": state_errors(state, errors),
+    }
+
+
+async def extract_job_cards(
+    cards: list[dict[str, Any]],
+    request: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     results = await asyncio.gather(
-        *(run_one_job_agent(card, state.get("scrape_request")) for card in cards)
+        *(run_one_job_agent(card, request) for card in cards)
     )
     errors = [
         f"Job extraction failed for {item['job_card'].get('title', 'job')}: "
@@ -958,7 +1072,7 @@ async def process_job_cards(state: ConversationState) -> dict[str, Any]:
         for item in results
         if item.get("validation_status") != "valid"
     ]
-    return {"job_results": list(results), "errors": state_errors(state, errors)}
+    return list(results), errors
 
 
 async def calculate_job_matches(state: ConversationState) -> dict[str, Any]:
@@ -1002,6 +1116,25 @@ async def calculate_job_matches(state: ConversationState) -> dict[str, Any]:
 
 CHAT_PROMPT = """You are a concise CV and job-search assistant.
 
+You can help users analyze CVs, search for jobs, extract job details, and
+compare jobs with their CV. If the latest message asks whether you can help or
+assist, answer affirmatively and briefly explain what you can do. Do not say
+you cannot assist merely because no jobs have been loaded yet; an empty job
+list means a search has not run, not that job assistance is unavailable.
+Present extracted or searched jobs even when no score is available. Only discuss
+matching scores when one is present or the user explicitly requested matching.
+If matching was requested but a valid CV is missing, explain that the jobs are
+available and the CV is needed only to calculate the score.
+Use the complete `jobs` list in the state summary as the source of truth for job
+list answers. For a normal search/list request, enumerate every entry in `jobs`;
+do not limit the answer to five jobs or choose only a subset. The number of
+numbered jobs should match `available_job_count`. If the user explicitly asks
+for the top, best, shortest, or a concise selection, a subset is allowed. If
+the user asks for more or next jobs, list jobs that were not already shown in
+the recent assistant reply. In every case, do not invent jobs that are not in
+`jobs`. All available jobs may be processed for extraction and matching when
+requested.
+
 Use the state summary to answer the latest user message. Do not invent job facts,
 CV facts, scores, or URLs. If cv_text is present, ground CV wording and section
 feedback in that text; if it is absent, use only the structured cv fields and say
@@ -1025,14 +1158,29 @@ def response_context(state: ConversationState) -> dict[str, Any]:
         )
         if features.get(key) not in (None, [], "")
     }
-    jobs = [
-        {
-            key: card.get(key)
-            for key in ("title", "company", "location", "url", "salary", "site")
-            if card.get(key)
-        }
-        for card in (state.get("job_cards") or [])
-    ]
+    jobs = []
+    for item in state.get("job_results") or []:
+        card = item.get("job_card") if isinstance(item, dict) else None
+        if not isinstance(card, dict):
+            continue
+        jobs.append(
+            {
+                key: card.get(key)
+                for key in (
+                    "title",
+                    "company",
+                    "location",
+                    "url",
+                    "salary",
+                    "site",
+                    "description",
+                )
+                if card.get(key)
+            }
+        )
+    for job in jobs:
+        if job.get("description"):
+            job["description"] = short_text(job["description"], 1200)
     matches = [
         {
             "title": item["job_card"].get("title"),
@@ -1047,9 +1195,13 @@ def response_context(state: ConversationState) -> dict[str, Any]:
     context = {
         "route": state.get("route"),
         "route_reason": state.get("route_reason"),
+        "job_source": state.get("job_source"),
+        "score_requested": state.get("score_requested", False),
         "cv": cv_summary,
         "scrape_total": state.get("scrape_total", 0),
         "scrape_truncated": state.get("scrape_truncated", False),
+        "available_job_count": len(jobs),
+        "processed_job_count": len(state.get("job_results") or []),
         "jobs": jobs,
         "matches": matches,
         "errors": (state.get("errors") or [])[-8:],
@@ -1059,6 +1211,40 @@ def response_context(state: ConversationState) -> dict[str, Any]:
         if cv_text:
             context["cv_text"] = cv_text
     return context
+
+
+def format_search_results(state: ConversationState) -> str | None:
+    """Render every scraped job without asking the response model to select."""
+    if state.get("route") != "search_jobs" or state.get("score_requested"):
+        return None
+
+    cards = [
+        item.get("job_card")
+        for item in state.get("job_results") or []
+        if isinstance(item, dict) and isinstance(item.get("job_card"), dict)
+    ]
+    if not cards:
+        return None
+
+    lines = [f"Here are the available job postings ({len(cards)}):", ""]
+    for index, card in enumerate(cards, start=1):
+        title = str(card.get("title") or "Untitled job").strip()
+        lines.append(f"{index}. **{title}**")
+        if card.get("company"):
+            lines.append(f"   - **Company:** {card['company']}")
+        if card.get("location"):
+            lines.append(f"   - **Location:** {card['location']}")
+        if card.get("salary"):
+            lines.append(f"   - **Salary:** {card['salary']}")
+        if card.get("url"):
+            lines.append(f"   - **URL:** [View Job]({card['url']})")
+        if card.get("site"):
+            lines.append(f"   - **Site:** {str(card['site']).title()}")
+        lines.append("")
+
+    if state.get("scrape_truncated"):
+        lines.append("The scraper reported that more jobs may be available.")
+    return "\n".join(lines).strip()
 
 
 def bounded_conversation(state: ConversationState) -> list[dict[str, str]]:
@@ -1084,6 +1270,13 @@ async def respond_node(
         return {
             "messages": [{"role": "assistant", "content": response}],
             "response": response,
+        }
+
+    search_response = format_search_results(state)
+    if search_response:
+        return {
+            "messages": [AIMessage(content=search_response)],
+            "response": search_response,
         }
 
     assistant = (chat_model or ChatModel.from_env()).response()
@@ -1118,14 +1311,6 @@ async def respond_node(
         }
 
 
-def ask_for_cv_node(state: ConversationState) -> dict[str, Any]:
-    response = "Please upload your CV PDF before I calculate job matches."
-    return {
-        "messages": [{"role": "assistant", "content": response}],
-        "response": response,
-    }
-
-
 def build_cv_subagent_graph() -> Any:
     """Build the expandable CV sub-agent graph.
 
@@ -1150,19 +1335,21 @@ def build_cv_subagent_graph() -> Any:
 
 
 def route_into_job_subagent(state: ConversationState) -> str:
-    if state.get("route") == "match_jobs" and not state.get("cv_features"):
-        return "ask_for_cv"
-    if state.get("route") == "search_jobs" or not state.get("job_cards"):
+    if state.get("job_source") == "pasted":
+        return "extract_pasted_job"
+    if state.get("route") == "search_jobs" or not state.get("job_results"):
         return "scrape_jobs"
-    if not state.get("job_results"):
-        return "process_jobs"
-    if state.get("route") == "match_jobs":
+    if state.get("score_requested"):
         return "match_jobs"
     return "end"
 
 
-def route_after_job_process(state: ConversationState) -> str:
-    return "match_jobs" if state.get("route") == "match_jobs" else "end"
+def route_after_job_extraction(state: ConversationState) -> str:
+    return "match_jobs" if state.get("score_requested") else "end"
+
+
+def route_after_pasted_job(state: ConversationState) -> str:
+    return "match_jobs" if state.get("score_requested") else "end"
 
 
 def build_job_subagent_graph() -> Any:
@@ -1170,33 +1357,34 @@ def build_job_subagent_graph() -> Any:
 
     The parent graph sees this compiled graph as one ``job_subagent`` node,
     while Studio can expand the internal scrape, extraction, and matching
-    steps. The MCP tool is only referenced by the scrape node inside this
-    child graph.
+    steps. Scraped jobs are extracted inside the scrape node and stored as
+    ``job_results`` for the response and matching steps.
     """
     builder = StateGraph(ConversationState)
     builder.add_node("scrape_jobs", scrape_jobs_with_mcp)
-    builder.add_node("process_jobs", process_job_cards)
+    builder.add_node("extract_pasted_job", extract_pasted_job)
     builder.add_node("match_jobs", calculate_job_matches)
-    builder.add_node("ask_for_cv", ask_for_cv_node)
 
     builder.set_conditional_entry_point(
         route_into_job_subagent,
         {
-            "ask_for_cv": "ask_for_cv",
+            "extract_pasted_job": "extract_pasted_job",
             "scrape_jobs": "scrape_jobs",
-            "process_jobs": "process_jobs",
             "match_jobs": "match_jobs",
             "end": END,
         },
     )
-    builder.add_edge("scrape_jobs", "process_jobs")
     builder.add_conditional_edges(
-        "process_jobs",
-        route_after_job_process,
+        "scrape_jobs",
+        route_after_job_extraction,
+        {"match_jobs": "match_jobs", "end": END},
+    )
+    builder.add_conditional_edges(
+        "extract_pasted_job",
+        route_after_pasted_job,
         {"match_jobs": "match_jobs", "end": END},
     )
     builder.add_edge("match_jobs", END)
-    builder.add_edge("ask_for_cv", END)
     return builder.compile(name="job_subagent")
 
 
@@ -1208,6 +1396,8 @@ def route_after_router(state: ConversationState) -> str:
     route = state.get("route") or "respond"
     if route == "extract_cv":
         return "extract_cv"
+    if route == "extract_job":
+        return "extract_job"
     if route == "search_jobs":
         return "search_jobs"
     if route == "match_jobs":
@@ -1217,7 +1407,11 @@ def route_after_router(state: ConversationState) -> str:
 
 def route_after_cv_subagent(state: ConversationState) -> str:
     route = state.get("route")
-    return "job_subagent" if route in {"search_jobs", "match_jobs"} else "respond"
+    return (
+        "job_subagent"
+        if route in {"extract_job", "search_jobs", "match_jobs"}
+        else "respond"
+    )
 
 
 def route_after_job_subagent(state: ConversationState) -> str:
@@ -1254,6 +1448,7 @@ def build_graph(
         route_after_router,
         {
             "extract_cv": "cv_subagent",
+            "extract_job": "job_subagent",
             "search_jobs": "job_subagent",
             "match_jobs": "job_subagent",
             "respond": "respond",
