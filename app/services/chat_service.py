@@ -253,6 +253,19 @@ class ChatService:
             graph_input = {
                 "messages": [{"role": "user", "content": message}],
             }
+            cv_context = await self._load_thread_cv_context(thread_id)
+            if cv_context is not None:
+                graph_input.update(cv_context)
+            else:
+                graph_input.update(
+                    {
+                        "cv_text": None,
+                        "cv_result": None,
+                        "cv_features": None,
+                        "cv_needs_extraction": False,
+                        "cv_review": None,
+                    }
+                )
 
             async for mode, payload in self._repository.graph.astream(
                 graph_input,
@@ -385,6 +398,14 @@ class ChatService:
             current_task = asyncio.current_task()
             if self._tasks.get(thread_id) is current_task:
                 self._tasks.pop(thread_id, None)
+
+    async def _load_thread_cv_context(
+        self,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        if self._cv_service is None:
+            return None
+        return await self._cv_service.load_latest_valid_thread_context(thread_id)
 
     async def shutdown(self) -> None:
         if self._cv_service is not None:
