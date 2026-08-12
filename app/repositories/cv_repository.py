@@ -206,3 +206,28 @@ class CvRepository:
         if record is None:
             raise CvExtractionNotFoundError(str(extraction_id))
         return record
+
+    async def get_latest_valid_extraction_for_thread(
+        self,
+        thread_id: str,
+    ) -> CvExtraction | None:
+        """Return the newest completed, validated CV extraction for one thread."""
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(CvExtraction)
+                    .where(
+                        CvExtraction.thread_id == thread_id,
+                        CvExtraction.status == "completed",
+                        CvExtraction.validation_status == "valid",
+                    )
+                    .order_by(
+                        CvExtraction.finished_at.desc(),
+                        CvExtraction.started_at.desc(),
+                        CvExtraction.version.desc(),
+                    )
+                    .limit(1)
+                )
+                return result.scalar_one_or_none()
+        except SQLAlchemyError as exc:
+            raise CvPersistenceError("Unable to load thread CV context") from exc
