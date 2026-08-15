@@ -454,6 +454,14 @@ USER_FACING_ACTIONS: frozenset[str] = frozenset(
         "match_jobs",
     }
 )
+CV_FEATURE_INTENTS: frozenset[str] = frozenset(
+    {
+        "extract_cv",
+        "review_cv",
+        "compare_cvs",
+        "match_jobs",
+    }
+)
 MAX_AGENT_ACTIONS: int = 4
 MAX_CV_DOCUMENTS: int = 5
 MAX_ACTION_RESULT_CHARS: int = 6000
@@ -529,6 +537,13 @@ class RouteDecision(BaseModel):
         description=(
             "True when answering requires the raw uploaded CV text "
             "(ambiguity, wording, section review, quote experience)."
+        ),
+    )
+    needs_cv_features: bool = Field(
+        default=False,
+        description=(
+            "True when answering depends on extracted CV profile features "
+            "(role or job-type recommendations from uploaded CVs, CV Q&A)."
         ),
     )
     selected_cv_id: str | None = Field(
@@ -911,6 +926,25 @@ def cv_needs_extraction_update(documents: list[dict[str, Any]]) -> dict[str, Any
             )
         }
     }
+
+
+def cvs_need_extraction(state: ConversationState) -> bool:
+    documents: list[dict[str, Any]] = state_cv_documents(state)
+    return bool(
+        cv_bucket(state).get("needs_extraction")
+        or any(
+            (doc.get("cv_text") or "").strip() and not doc.get("cv_features")
+            for doc in documents
+        )
+    )
+
+
+def intent_requires_cv_features(state: ConversationState) -> bool:
+    router: dict[str, Any] = router_bucket(state)
+    route: RouteName = router.get("route") or "respond"
+    if route in CV_FEATURE_INTENTS:
+        return True
+    return route == "respond" and bool(router.get("needs_cv_features"))
 
 
 def cv_feature_summary(features: dict[str, Any] | None) -> dict[str, Any]:
@@ -1337,6 +1371,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         "router": {
             "completed_actions": [],
             "needs_cv_text": False,
+            "needs_cv_features": False,
         },
         "selection": {
             "job_source": "none",
@@ -1448,28 +1483,33 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
 
 ROUTER_PROMPT: str = """You are the stateful planner for a conversational CV and
 job-search assistant. Choose exactly one next route for the current user
-message. A route identifies the user's next goal; its workflow may execute
-prerequisite actions before that goal completes. After the workflow completes,
-you will receive the updated state and choose again.
+message. A route identifies the user's goal. Prerequisite work such as CV
+extraction is handled by the workflow when needed; do not choose extract_cv
+just because extracted_cv_count is below cv_count.
 
 Routes:
-- extract_cv: analyze or update the CV already uploaded in this thread.
+- extract_cv: only when the user explicitly asks to analyze, parse, or refresh
+  CV extraction with no review, comparison, matching, or role-advice goal.
 - review_cv: explicitly review, audit, score, or improve the quality of one uploaded CV.
 - compare_cvs: compare, rank, or evaluate two or more uploaded CVs against each other.
 - extract_job: extract and summarize a job description pasted in the latest message.
-- search_jobs: find, scrape, search, or refresh job postings.
-- match_jobs: identify which available or pasted jobs fit the uploaded CV or provide a
-  requested match score against jobs.
-- respond: general conversation or questions about already-loaded results.
+- search_jobs: find, scrape, search, or refresh live job postings.
+- match_jobs: score uploaded CVs against already-loaded, pasted, or newly searched
+  job postings.
+- respond: general conversation, questions about already-loaded results, or advice
+  about which roles or job types fit the uploaded CV profiles when no live job
+  search or job-posting match is requested.
 
 Never choose a route listed in completed_actions. Choose respond when the user
-request is satisfied by the available state. When the user explicitly asks for
-CV review or CV comparison, keep review_cv or compare_cvs as the route even if
-cv_available is false or extracted_cv_count is below cv_count: the CV workflow
-will extract the missing profiles before executing that goal. Choose extract_cv
-as the route only when the user explicitly asks to analyze or update a CV
-without a downstream review, comparison, or matching goal. For job matching,
-choose extract_cv before match_jobs when extraction is still pending.
+request is satisfied by the available state, including questions like "what type
+of jobs suit all of them?" when CVs are already loaded. When the user explicitly
+asks for CV review or CV comparison, keep review_cv or compare_cvs as the route
+even if cv_available is false or extracted_cv_count is below cv_count: the CV
+workflow will extract missing profiles before that goal. Never choose extract_cv
+when extracted_cv_count equals cv_count and the user did not explicitly ask to
+re-extract. Do not choose extract_cv for role or job-type recommendations; choose
+respond and set needs_cv_features=true. Do not choose match_jobs unless the user
+wants scores against concrete job postings that are loaded, pasted, or searched.
 For "What do you think?", "What do u think?", "How about this?", or similarly
 broad feedback:
 - if cv_count is 1, choose review_cv
@@ -1481,10 +1521,12 @@ Uploading another CV with a broad feedback request after earlier CVs already
 exist is a compare_cvs request, not a single-CV review.
 When the user asks to compare, contrast, rank, or choose between multiple
 uploaded CVs, choose compare_cvs.
-Do not choose match_jobs for CV-to-CV comparison. When a matching request has no
-usable jobs, choose extract_job for a pasted job or search_jobs for a requested
-job search before match_jobs. Never choose match_jobs when job_count is 0 and
-job_source would be existing or none.
+Do not choose match_jobs for CV-to-CV comparison. For a plain job search with no
+CV matching request, choose search_jobs and leave score_requested=false. For
+"find jobs and match/score them against my CV", choose match_jobs with
+job_source=search and score_requested=true; the job workflow searches first,
+then matches, without a second planner pass. Never choose match_jobs when
+job_count is 0 and job_source would be existing or none.
 
 Also set job_source:
 - pasted: the latest message contains a job posting or job description to analyze.
@@ -1493,9 +1535,11 @@ Also set job_source:
 - none: no job input is involved.
 
 If pasted job text and a request for similar or current jobs appear together, use
-search as the job_source and search_jobs as the route. Use extract_job for pasted
-job text when no score is requested. Set score_requested=true only when the user
-explicitly asks to match, compare, rank, calculate, or score a job against the CV.
+search as the job_source and search_jobs as the route when no CV match is
+requested. Use match_jobs with job_source=search when the user asks to search and
+score or match the results against a CV. Use extract_job for pasted job text when
+no score is requested. Set score_requested=true only when the user explicitly
+asks to match, compare, rank, calculate, or score a job against the CV.
 CV-to-CV comparison is not job matching: leave job_source=none and
 score_requested=false for compare_cvs.
 
@@ -1503,6 +1547,13 @@ Set needs_cv_text=true only when the reply must use the raw CV wording or sectio
 (ambiguity, rewrite feedback, quote experience, review a specific part). Leave it
 false for job search, matching, scores, CV comparison, or answers that only need
 structured CV fields already extracted.
+
+Set needs_cv_features=true when respond must use extracted CV profile features,
+such as recommending suitable roles or job types for one or more uploaded CVs.
+Leave needs_cv_features=false for chitchat, search_jobs, extract_job, and answers
+that do not need CV profiles. review_cv, compare_cvs, match_jobs, and extract_cv
+always depend on CV features; you may leave needs_cv_features=false for those
+routes because the workflow already treats them as CV-dependent.
 
 For review_cv, set review_target_role only when the user explicitly names the
 role they want the CV reviewed for (for example, "Backend Engineer"). Otherwise
@@ -1543,6 +1594,7 @@ async def route_message(
                 "route": "respond",
                 "route_reason": "No user message was provided.",
                 "needs_cv_text": False,
+                "needs_cv_features": False,
             },
             "selection": {
                 "job_source": "none",
@@ -1631,6 +1683,7 @@ async def route_message(
         needs_cv_text: bool = bool(decision.needs_cv_text) and any(
             (doc.get("cv_text") or "").strip() for doc in documents
         )
+        needs_cv_features: bool = bool(decision.needs_cv_features)
         job_source: JobSource = decision.job_source
         if decision.route == "extract_job":
             job_source = "pasted"
@@ -1661,16 +1714,38 @@ async def route_message(
                 "so compare them."
             )
             selected_cv_id = None
+        if route == "extract_cv" and not cvs_need_extraction(state):
+            route = "respond"
+            route_reason = (
+                "CV profiles are already extracted; answering from loaded state."
+            )
+            needs_cv_features = True
+        if (
+            route == "match_jobs"
+            and job_source == "search"
+            and not bool(decision.score_requested)
+        ):
+            route = "search_jobs"
+            route_reason = (
+                "The user asked to search for jobs without requesting CV matching."
+            )
+            selected_cv_id = None
+            selected_job_keys = None
+        if route in CV_FEATURE_INTENTS:
+            needs_cv_features = True
         return {
             "router": {
                 "route": route,
                 "route_reason": route_reason,
                 "needs_cv_text": needs_cv_text,
+                "needs_cv_features": needs_cv_features,
             },
             "selection": {
                 "job_source": job_source,
                 "job_input_text": latest if job_source == "pasted" else None,
-                "score_requested": bool(decision.score_requested),
+                "score_requested": bool(decision.score_requested)
+                if route == "match_jobs"
+                else False,
                 "review_target_role": (
                     decision.review_target_role.strip()
                     if route == "review_cv" and decision.review_target_role
@@ -1689,8 +1764,8 @@ async def route_message(
                     if route == "review_cv" and decision.review_mode_reason
                     else None
                 ),
-                "selected_cv_id": selected_cv_id,
-                "selected_job_keys": selected_job_keys,
+                "selected_cv_id": selected_cv_id if route in {"review_cv", "match_jobs"} else None,
+                "selected_job_keys": selected_job_keys if route == "match_jobs" else None,
             },
             "jobs": {
                 "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
@@ -1702,6 +1777,7 @@ async def route_message(
                 "route": "respond",
                 "route_reason": "Router failed; using the conversational fallback.",
                 "needs_cv_text": False,
+                "needs_cv_features": False,
             },
             "selection": {
                 "job_source": "none",
@@ -1940,14 +2016,7 @@ def route_into_cv_subagent(state: ConversationState) -> str:
     has_text: bool = any((doc.get("cv_text") or "").strip() for doc in documents)
     if not has_text:
         return "missing_cv"
-    needs_extraction: bool = bool(
-        cv_bucket(state).get("needs_extraction")
-        or any(
-            (doc.get("cv_text") or "").strip() and not doc.get("cv_features")
-            for doc in documents
-        )
-    )
-    if needs_extraction or not any(doc.get("cv_features") for doc in documents):
+    if cvs_need_extraction(state) or not any(doc.get("cv_features") for doc in documents):
         return "extract_cv"
     route: RouteName | None = router_bucket(state).get("route")
     if route == "compare_cvs":
@@ -2218,6 +2287,9 @@ the recent assistant reply. In every case, do not invent jobs that are not in
 `jobs`. All available jobs may be processed for extraction and matching when
 requested. When `matches` includes multiple CVs, explain which CV fits which
 job best using `cv_filename` and the scores; do not hide the CV identity.
+When the user asks what roles or job types suit one or more uploaded CVs and
+no live search or job-match scores are required, answer from the `cvs` profile
+summaries already in state; do not claim you need to re-extract the CVs.
 
 Use the state summary and any completed-action tool results in the conversation
 to answer the latest user message. Keep full chat history for continuity, but
@@ -2596,8 +2668,16 @@ def route_into_job_subagent(state: ConversationState) -> str:
     return "end"
 
 
+def route_after_search_or_extract(state: ConversationState) -> str:
+    router: dict[str, Any] = router_bucket(state)
+    route: RouteName | None = router.get("route")
+    if route == "match_jobs" and jobs_bucket(state).get("results"):
+        return "match_jobs"
+    return "end"
+
+
 def build_job_subagent_graph() -> Any:
-    """Build one atomic job action per planner turn."""
+    """Build the job workflow, including search/extract prerequisites for matching."""
 
     async def search_node(state: ConversationState) -> dict[str, Any]:
         return record_completed_action(
@@ -2637,8 +2717,22 @@ def build_job_subagent_graph() -> Any:
             "end": END,
         },
     )
-    builder.add_edge("scrape_jobs", END)
-    builder.add_edge("extract_pasted_job", END)
+    builder.add_conditional_edges(
+        "scrape_jobs",
+        route_after_search_or_extract,
+        {
+            "match_jobs": "match_jobs",
+            "end": END,
+        },
+    )
+    builder.add_conditional_edges(
+        "extract_pasted_job",
+        route_after_search_or_extract,
+        {
+            "match_jobs": "match_jobs",
+            "end": END,
+        },
+    )
     builder.add_edge("match_jobs", END)
     return builder.compile(name="job_subagent")
 
@@ -2652,18 +2746,13 @@ def route_after_router(state: ConversationState) -> str:
     router: dict[str, Any] = router_bucket(state)
     selection: dict[str, Any] = selection_bucket(state)
     route: RouteName = router.get("route") or "respond"
-    documents: list[dict[str, Any]] = state_cv_documents(state)
-    needs_extraction: bool = bool(
-        cv_bucket(state).get("needs_extraction")
-        or any(
-            (doc.get("cv_text") or "").strip() and not doc.get("cv_features")
-            for doc in documents
-        )
-    )
-    if needs_extraction:
+    needs_extraction: bool = cvs_need_extraction(state)
+    if needs_extraction and intent_requires_cv_features(state):
         if route in {"review_cv", "compare_cvs"} and "extract_cv" not in actions:
             return route
         return "respond" if "extract_cv" in actions else "extract_cv"
+    if route == "extract_cv" and not needs_extraction:
+        return "respond"
     if route in actions:
         return "respond"
     if route == "extract_cv":
@@ -2696,11 +2785,18 @@ def route_after_cv_subagent(state: ConversationState) -> str:
     has_text: bool = any((doc.get("cv_text") or "").strip() for doc in documents)
     if not has_text:
         return "respond"
+    route: RouteName = router_bucket(state).get("route") or "respond"
+    if (
+        route in {"respond", "extract_cv"}
+        and "extract_cv" in completed_actions(state)
+        and not cvs_need_extraction(state)
+    ):
+        return "respond"
     return route_after_agent_action(state)
 
 
 def route_after_job_subagent(state: ConversationState) -> str:
-    return route_after_agent_action(state)
+    return "respond"
 
 
 def build_graph(
