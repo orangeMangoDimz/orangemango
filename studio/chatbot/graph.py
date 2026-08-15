@@ -28,6 +28,7 @@ the empty file-data render error. PDF bytes are decoded in memory only.
 import asyncio
 import base64
 import binascii
+import hashlib
 import importlib.util
 import json
 import re
@@ -39,7 +40,7 @@ from types import ModuleType
 from typing import Any, Annotated, Literal, TypedDict
 
 from app.models.chat_model import ChatModel
-from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, START, StateGraph
@@ -370,7 +371,7 @@ def sanitize_file_message(
         and parsed.get("type") == "text"
         and str(parsed.get("text") or "").strip()
     ]
-    text_parts.append("[PDF CV uploaded separately]")
+    text_parts.append(PDF_UPLOAD_MARKER)
     sanitized: Any = with_message_content(message, "\n".join(text_parts))
 
     if not stash_upload:
@@ -444,14 +445,26 @@ AGENT_ACTIONS: frozenset[str] = frozenset(
         "match_jobs",
     }
 )
+USER_FACING_ACTIONS: frozenset[str] = frozenset(
+    {
+        "review_cv",
+        "compare_cvs",
+        "extract_job",
+        "search_jobs",
+        "match_jobs",
+    }
+)
 MAX_AGENT_ACTIONS: int = 4
 MAX_CV_DOCUMENTS: int = 5
+MAX_ACTION_RESULT_CHARS: int = 6000
+PDF_UPLOAD_MARKER: str = "[PDF CV uploaded separately]"
 VAGUE_CV_FEEDBACK_PATTERN: re.Pattern[str] = re.compile(
     r"^\s*(?:"
     r"what\s+do\s+(?:you|u)\s+think\??|"
     r"wdyt\??|"
     r"(?:any\s+)?thoughts\??|"
     r"feedback\??|"
+    r"how\s+about\s+(?:it|this|them|these)\??|"
     r"how\s+(?:does|do)\s+(?:it|this|they|these)\s+look\??|"
     r"which\s+(?:one\s+)?(?:is\s+)?better\??"
     r")\s*$",
@@ -522,8 +535,9 @@ class RouteDecision(BaseModel):
         default=None,
         max_length=80,
         description=(
-            "For review_cv or match_jobs: the id from the cvs catalog for the "
-            "CV the user named, or null to use the first extracted CV."
+            "For review_cv: the id from the cvs catalog for the CV the user "
+            "named, or null to use the first extracted CV. For match_jobs: the "
+            "id of one CV when named, or null to match every extracted CV."
         ),
     )
     selected_job_keys: list[str] | None = Field(
@@ -612,6 +626,8 @@ def record_completed_action(
     state: ConversationState,
     action: AgentAction,
     update: dict[str, Any],
+    *,
+    emit_result: bool = False,
 ) -> dict[str, Any]:
     """Attach one executed action to a node update without duplicate entries."""
     actions: list[str] = completed_actions(state)
@@ -621,8 +637,262 @@ def record_completed_action(
     nested: dict[str, Any] = (
         dict(router_update) if isinstance(router_update, dict) else {}
     )
-    rest: dict[str, Any] = {key: value for key, value in update.items() if key != "router"}
+    rest: dict[str, Any] = {
+        key: value for key, value in update.items() if key != "router"
+    }
+    if emit_result and action in USER_FACING_ACTIONS:
+        payload: dict[str, Any] | None = slim_action_result(action, update, state)
+        if payload is not None:
+            result_messages: list[AnyMessage] = build_action_result_messages(
+                action, payload
+            )
+            existing_messages: Any = rest.get("messages")
+            if isinstance(existing_messages, list) and existing_messages:
+                rest["messages"] = [*existing_messages, *result_messages]
+            else:
+                rest["messages"] = result_messages
     return {**rest, "router": {**nested, "completed_actions": actions}}
+
+
+def slim_review_result(review: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(review, dict):
+        return None
+    feedback: list[dict[str, Any]] = []
+    for item in review.get("feedback") or []:
+        if not isinstance(item, dict):
+            continue
+        feedback.append(
+            {
+                "title": item.get("title"),
+                "observation": item.get("observation"),
+                "recommendation": item.get("recommendation"),
+            }
+        )
+    return {
+        "status": review.get("status"),
+        "mode": review.get("mode"),
+        "focus": review.get("focus"),
+        "target_role": review.get("target_role"),
+        "overall_score": review.get("overall_score"),
+        "feedback": feedback,
+    }
+
+
+def slim_comparison_result(comparison: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(comparison, dict):
+        return None
+    candidates: list[dict[str, Any]] = []
+    for item in comparison.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        candidates.append(
+            {
+                "filename": item.get("filename"),
+                "strengths": item.get("strengths") or [],
+                "weaknesses": item.get("weaknesses")
+                or item.get("gaps")
+                or [],
+                "summary": item.get("summary"),
+            }
+        )
+    return {
+        "overview": comparison.get("overview"),
+        "candidates": candidates,
+        "recommendation": comparison.get("recommendation"),
+    }
+
+
+def slim_job_card(card: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(card, dict):
+        return {}
+    return {
+        key: card.get(key)
+        for key in ("title", "company", "location", "url", "salary", "site")
+        if card.get(key)
+    }
+
+
+def slim_search_result(jobs_update: dict[str, Any], state: ConversationState) -> dict[str, Any]:
+    results: list[dict[str, Any]] = [
+        item
+        for item in (jobs_update.get("results") or jobs_bucket(state).get("results") or [])
+        if isinstance(item, dict)
+    ]
+    jobs: list[dict[str, Any]] = []
+    for item in results:
+        card: dict[str, Any] = slim_job_card(
+            item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+        )
+        if card:
+            jobs.append(card)
+    return {
+        "job_count": len(jobs),
+        "scrape_total": jobs_update.get(
+            "scrape_total", jobs_bucket(state).get("scrape_total", 0)
+        ),
+        "scrape_truncated": bool(
+            jobs_update.get(
+                "scrape_truncated",
+                jobs_bucket(state).get("scrape_truncated", False),
+            )
+        ),
+        "jobs": jobs,
+    }
+
+
+def slim_match_result(jobs_update: dict[str, Any]) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    for item in jobs_update.get("matches") or []:
+        if not isinstance(item, dict):
+            continue
+        score: Any = item.get("score")
+        matches.append(
+            {
+                "cv_id": item.get("cv_id"),
+                "cv_filename": item.get("cv_filename"),
+                "job_key": item.get("job_key"),
+                "job": slim_job_card(
+                    item.get("job_card")
+                    if isinstance(item.get("job_card"), dict)
+                    else None
+                ),
+                "normalized_score": (
+                    score.get("normalized_score") if isinstance(score, dict) else None
+                ),
+                "decision": score.get("decision") if isinstance(score, dict) else None,
+            }
+        )
+    return {"match_count": len(matches), "matches": matches}
+
+
+def slim_extract_job_result(
+    jobs_update: dict[str, Any],
+    state: ConversationState,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = [
+        item
+        for item in (jobs_update.get("results") or [])
+        if isinstance(item, dict)
+    ]
+    if not results:
+        results = [
+            item
+            for item in (jobs_bucket(state).get("results") or [])
+            if isinstance(item, dict)
+        ]
+    latest: dict[str, Any] = results[-1] if results else {}
+    return {
+        "job_count": len(results),
+        "validation_status": latest.get("validation_status"),
+        "job": slim_job_card(
+            latest.get("job_card")
+            if isinstance(latest.get("job_card"), dict)
+            else None
+        ),
+    }
+
+
+def slim_action_result(
+    action: AgentAction,
+    update: dict[str, Any],
+    state: ConversationState,
+) -> dict[str, Any] | None:
+    errors: list[str] = [
+        str(item)
+        for item in (update.get("errors") or state.get("errors") or [])[-3:]
+        if item
+    ]
+    if action == "review_cv":
+        review: Any = (update.get("cv") or {}).get("review")
+        slim: dict[str, Any] | None = slim_review_result(
+            review if isinstance(review, dict) else None
+        )
+        if slim is None:
+            return {"ok": False, "action": action, "errors": errors or ["CV review failed."]}
+        return {
+            "ok": slim.get("status") != "unavailable",
+            "action": action,
+            "review": slim,
+            "errors": errors,
+        }
+    if action == "compare_cvs":
+        comparison: Any = (update.get("cv") or {}).get("comparison")
+        slim_comparison: dict[str, Any] | None = slim_comparison_result(
+            comparison if isinstance(comparison, dict) else None
+        )
+        if slim_comparison is None:
+            return {
+                "ok": False,
+                "action": action,
+                "errors": errors or ["CV comparison failed."],
+            }
+        return {
+            "ok": True,
+            "action": action,
+            "comparison": slim_comparison,
+            "errors": errors,
+        }
+    if action == "search_jobs":
+        jobs_update: dict[str, Any] = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        return {
+            "ok": True,
+            "action": action,
+            **slim_search_result(jobs_update, state),
+            "errors": errors,
+        }
+    if action == "match_jobs":
+        jobs_update = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        return {
+            "ok": bool(jobs_update.get("matches")),
+            "action": action,
+            **slim_match_result(jobs_update),
+            "errors": errors,
+        }
+    if action == "extract_job":
+        jobs_update = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        payload: dict[str, Any] = slim_extract_job_result(jobs_update, state)
+        return {
+            "ok": payload.get("validation_status") == "valid",
+            "action": action,
+            **payload,
+            "errors": errors,
+        }
+    return None
+
+
+def build_action_result_messages(
+    action: AgentAction,
+    payload: dict[str, Any],
+) -> list[AnyMessage]:
+    tool_call_id: str = f"{action}:{uuid.uuid4()}"
+    content: str = short_text(
+        json.dumps(payload, ensure_ascii=False),
+        MAX_ACTION_RESULT_CHARS,
+    )
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": tool_call_id,
+                    "name": action,
+                    "args": {},
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content=content,
+            tool_call_id=tool_call_id,
+            name=action,
+        ),
+    ]
 
 
 def state_cv_documents(state: ConversationState) -> list[dict[str, Any]]:
@@ -674,19 +944,55 @@ def job_selection_key(item: dict[str, Any], index: int) -> str:
         url: str = str(card.get("url") or "").strip()
         if url:
             return "url:" + url.casefold()
+        title: str = str(card.get("title") or "").strip().casefold()
+        company: str = str(card.get("company") or "").strip().casefold()
+        if title or company:
+            return f"title:{title}|company:{company}"
+        description: str = str(card.get("description") or "").strip()
+        if description:
+            digest: str = hashlib.sha1(
+                description.encode("utf-8"),
+                usedforsecurity=False,
+            ).hexdigest()[:16]
+            return f"desc:{digest}"
     return f"idx:{index}"
 
 
+def merge_job_results(
+    existing: list[dict[str, Any]] | None,
+    incoming: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for source in (existing or [], incoming or []):
+        for index, item in enumerate(source):
+            if not isinstance(item, dict):
+                continue
+            key: str = job_selection_key(item, index)
+            if key not in by_key:
+                order.append(key)
+            by_key[key] = item
+    return [by_key[key] for key in order]
+
+
 def resolve_selected_cv(state: ConversationState) -> dict[str, Any] | None:
+    documents: list[dict[str, Any]] = resolve_selected_cvs(state)
+    return documents[0] if documents else None
+
+
+def resolve_selected_cvs(state: ConversationState) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = extracted_cv_documents(state)
     if not documents:
-        return None
+        return []
     selected_id: str = str(selection_bucket(state).get("selected_cv_id") or "").strip()
-    if selected_id:
-        for document in documents:
-            if str(document.get("id") or "") == selected_id:
-                return document
-    return documents[0]
+    if not selected_id:
+        return documents
+    selected: list[dict[str, Any]] = [
+        document
+        for document in documents
+        if str(document.get("id") or "") == selected_id
+    ]
+    return selected or documents
 
 
 def resolve_selected_jobs(state: ConversationState) -> list[dict[str, Any]]:
@@ -900,7 +1206,8 @@ def last_user_text(state: ConversationState) -> str:
 
 
 def is_vague_cv_feedback(text: str) -> bool:
-    return bool(VAGUE_CV_FEEDBACK_PATTERN.match((text or "").strip()))
+    cleaned: str = (text or "").replace(PDF_UPLOAD_MARKER, "").strip()
+    return bool(VAGUE_CV_FEEDBACK_PATTERN.match(cleaned))
 
 
 def state_errors(state: ConversationState, extra: list[str] | None = None) -> list[str]:
@@ -1026,7 +1333,6 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         "input_error": False,
         "cv": {
             "needs_extraction": False,
-            "comparison": None,
         },
         "router": {
             "completed_actions": [],
@@ -1091,11 +1397,23 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
             ],
         }
 
-    documents: list[dict[str, Any]] = []
+    existing_documents: list[dict[str, Any]] = state_cv_documents(state)
+    remaining_slots: int = max(0, MAX_CV_DOCUMENTS - len(existing_documents))
+    if remaining_slots == 0:
+        return {
+            **updates,
+            "input_error": True,
+            "errors": [
+                f"A thread can hold at most {MAX_CV_DOCUMENTS} CVs. "
+                "Start a new thread to upload more."
+            ],
+        }
+
+    new_documents: list[dict[str, Any]] = []
     errors: list[str] = []
-    for upload in pending_uploads[:MAX_CV_DOCUMENTS]:
+    for upload in pending_uploads[:remaining_slots]:
         try:
-            documents.append(cv_document_from_upload(upload))
+            new_documents.append(cv_document_from_upload(upload))
         except Exception as exc:
             filename: str = (
                 str(upload.get("filename") or "cv.pdf")
@@ -1106,7 +1424,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
                 f"CV upload failed for {filename}: {type(exc).__name__}: {exc}"
             )
 
-    if not documents:
+    if not new_documents:
         return {
             **updates,
             "input_error": True,
@@ -1114,6 +1432,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
             or ["CV upload failed: no readable PDF documents were provided."],
         }
 
+    documents: list[dict[str, Any]] = [*existing_documents, *new_documents]
     updates.update(
         {
             "cv": {
@@ -1151,12 +1470,15 @@ will extract the missing profiles before executing that goal. Choose extract_cv
 as the route only when the user explicitly asks to analyze or update a CV
 without a downstream review, comparison, or matching goal. For job matching,
 choose extract_cv before match_jobs when extraction is still pending.
-For "What do you think?", "What do u think?", or similarly broad feedback:
+For "What do you think?", "What do u think?", "How about this?", or similarly
+broad feedback:
 - if cv_count is 1, choose review_cv
 - if cv_count is 2 or more and the user did not name one specific CV, choose
   compare_cvs
 - if cv_count is 2 or more and the user names one CV, choose review_cv and set
   selected_cv_id
+Uploading another CV with a broad feedback request after earlier CVs already
+exist is a compare_cvs request, not a single-CV review.
 When the user asks to compare, contrast, rank, or choose between multiple
 uploaded CVs, choose compare_cvs.
 Do not choose match_jobs for CV-to-CV comparison. When a matching request has no
@@ -1196,12 +1518,13 @@ null for every other route.
 
 For review_cv or match_jobs, set selected_cv_id to the matching id from the cvs
 catalog when the user names a CV by filename, order (for example "second CV"),
-or other unambiguous reference. Leave selected_cv_id null to use the first
-extracted CV. Never invent an id that is absent from cvs. For match_jobs, set
-selected_job_keys to the matching keys from the jobs catalog only when the user
-names specific jobs; leave selected_job_keys null to match all valid jobs.
-Never invent job keys. For every other route, leave selected_cv_id and
-selected_job_keys null.
+or other unambiguous reference. For match_jobs, leave selected_cv_id null to
+match every extracted CV against the selected jobs. For review_cv, leave
+selected_cv_id null to use the first extracted CV. Never invent an id that is
+absent from cvs. For match_jobs, set selected_job_keys to the matching keys from
+the jobs catalog only when the user names specific jobs; leave selected_job_keys
+null to match all valid jobs. Never invent job keys. For every other route,
+leave selected_cv_id and selected_job_keys null.
 
 Job searches should include concise keywords and optional sites. Never invent a
 keyword unsupported by the user request. CV content is supplied separately as
@@ -1328,9 +1651,8 @@ async def route_message(
         route: RouteName = decision.route
         route_reason: str = decision.reason
         if (
-            route == "review_cv"
+            route in {"review_cv", "extract_cv"}
             and len(documents) >= 2
-            and not selected_cv_id
             and is_vague_cv_feedback(latest)
         ):
             route = "compare_cvs"
@@ -1662,6 +1984,11 @@ def scrape_payload_from_card(
 
 
 async def scrape_jobs_with_mcp(state: ConversationState) -> dict[str, Any]:
+    existing_results: list[dict[str, Any]] = [
+        item
+        for item in (jobs_bucket(state).get("results") or [])
+        if isinstance(item, dict)
+    ]
     try:
         tool: Any = await load_scrape_jobs_tool()
         request: dict[str, Any] = dict(jobs_bucket(state).get("scrape_request") or {})
@@ -1676,7 +2003,7 @@ async def scrape_jobs_with_mcp(state: ConversationState) -> dict[str, Any]:
             "jobs": {
                 "scrape_total": compact["total"],
                 "scrape_truncated": compact["truncated"],
-                "results": job_results,
+                "results": merge_job_results(existing_results, job_results),
                 "matches": [],
             },
             "errors": state_errors(
@@ -1689,7 +2016,6 @@ async def scrape_jobs_with_mcp(state: ConversationState) -> dict[str, Any]:
             "jobs": {
                 "scrape_total": 0,
                 "scrape_truncated": False,
-                "results": [],
                 "matches": [],
             },
             "errors": state_errors(
@@ -1739,10 +2065,14 @@ def pasted_job_card(text: str) -> dict[str, Any]:
 
 async def extract_pasted_job(state: ConversationState) -> dict[str, Any]:
     text: str = (selection_bucket(state).get("job_input_text") or "").strip()
+    existing_results: list[dict[str, Any]] = [
+        item
+        for item in (jobs_bucket(state).get("results") or [])
+        if isinstance(item, dict)
+    ]
     if not text:
         return {
             "jobs": {
-                "results": [],
                 "matches": [],
             },
             "errors": state_errors(
@@ -1762,9 +2092,9 @@ async def extract_pasted_job(state: ConversationState) -> dict[str, Any]:
 
     return {
         "jobs": {
-            "scrape_total": 0,
-            "scrape_truncated": False,
-            "results": [result],
+            "scrape_total": jobs_bucket(state).get("scrape_total", 0),
+            "scrape_truncated": jobs_bucket(state).get("scrape_truncated", False),
+            "results": merge_job_results(existing_results, [result]),
             "matches": [],
         },
         "errors": state_errors(state, errors),
@@ -1788,13 +2118,14 @@ async def extract_job_cards(
 
 
 async def calculate_job_matches(state: ConversationState) -> dict[str, Any]:
-    selected_cv: dict[str, Any] | None = resolve_selected_cv(state)
-    cv_result: Any = selected_cv.get("cv_result") if selected_cv else None
-    if (
-        not selected_cv
-        or not isinstance(cv_result, dict)
-        or not selected_cv.get("cv_features")
-    ):
+    selected_cvs: list[dict[str, Any]] = resolve_selected_cvs(state)
+    usable_cvs: list[dict[str, Any]] = [
+        document
+        for document in selected_cvs
+        if isinstance(document.get("cv_result"), dict)
+        and document.get("cv_features")
+    ]
+    if not usable_cvs:
         return {
             "jobs": {"matches": []},
             "errors": state_errors(
@@ -1803,21 +2134,54 @@ async def calculate_job_matches(state: ConversationState) -> dict[str, Any]:
             ),
         }
 
+    selected_jobs: list[dict[str, Any]] = resolve_selected_jobs(state)
+    if not selected_jobs:
+        return {
+            "jobs": {"matches": []},
+            "errors": state_errors(
+                state,
+                ["No valid jobs are available to match against the CV."],
+            ),
+        }
+
+    job_results: Any = jobs_bucket(state).get("results") or []
+    job_key_by_id: dict[int, str] = {
+        id(item): job_selection_key(item, index)
+        for index, item in enumerate(job_results)
+        if isinstance(item, dict)
+    }
+
     matches: list[dict[str, Any]] = []
     errors: list[str] = []
-    for item in resolve_selected_jobs(state):
-        try:
-            result: dict[str, Any] = await matching_score_graph.ainvoke(
-                {"cv_result": cv_result, "job_result": item}
-            )
-            score: Any = result.get("score")
-            if score is not None:
-                matches.append({"job_card": item["job_card"], "score": score})
-        except Exception as exc:
-            errors.append(
-                f"Matching failed for {item['job_card'].get('title', 'job')}: "
-                f"{type(exc).__name__}: {exc}"
-            )
+    for document in usable_cvs:
+        cv_result: Any = document.get("cv_result")
+        cv_id: str = str(document.get("id") or "")
+        cv_filename: str = str(document.get("filename") or "cv.pdf")
+        for item in selected_jobs:
+            job_title: str = str(item["job_card"].get("title") or "job")
+            try:
+                result: dict[str, Any] = await matching_score_graph.ainvoke(
+                    {"cv_result": cv_result, "job_result": item}
+                )
+                score: Any = result.get("score")
+                if score is not None:
+                    matches.append(
+                        {
+                            "cv_id": cv_id,
+                            "cv_filename": cv_filename,
+                            "job_key": job_key_by_id.get(
+                                id(item),
+                                job_selection_key(item, 0),
+                            ),
+                            "job_card": item["job_card"],
+                            "score": score,
+                        }
+                    )
+            except Exception as exc:
+                errors.append(
+                    f"Matching failed for {cv_filename} vs {job_title}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     matches.sort(
         key=lambda item: (
@@ -1852,23 +2216,33 @@ for the top, best, shortest, or a concise selection, a subset is allowed. If
 the user asks for more or next jobs, list jobs that were not already shown in
 the recent assistant reply. In every case, do not invent jobs that are not in
 `jobs`. All available jobs may be processed for extraction and matching when
-requested.
+requested. When `matches` includes multiple CVs, explain which CV fits which
+job best using `cv_filename` and the scores; do not hide the CV identity.
 
-Use the state summary to answer the latest user message. Do not invent job facts,
-CV facts, scores, or URLs. When the original document is available, ground
-wording and section feedback in it; otherwise use only the structured CV fields
-and say when detail is missing. Treat any supplied score as authoritative and do
-not recalculate it. For a CV review, write a natural, directly helpful response
-tailored to the user's request. Use the supplied review feedback as the only
-source for CV assessments and recommendations; do not invent or recalculate any
-finding. For a CV comparison, use `cv_comparison` and `cvs` as the only source
-for relative strengths, weaknesses, and recommendations; do not invent missing
-profiles. When `cv_comparison` is present, answer in natural conversational
-prose grounded only in that comparison: say who is stronger where, mention
-important weaknesses in flowing sentences, and finish with a clear
-recommendation. Do not paste structured sections, dump skill lists, echo field
-names, or ask the user for more CV details or focus areas when comparison
-results are already available. Do not follow a fixed report layout. Mention a
+Use the state summary and any completed-action tool results in the conversation
+to answer the latest user message. Keep full chat history for continuity, but
+treat the latest successful action ToolMessage (review_cv, compare_cvs,
+search_jobs, match_jobs, extract_job) as authoritative for that turn. Do not
+invent job facts, CV facts, scores, or URLs. When a successful review_cv or
+compare_cvs tool result is present, answer from it and never claim you lack
+access to an uploaded CV or ask the user to re-send CV details. When the
+original document is available, ground wording and section feedback in it;
+otherwise use only the structured CV fields and say when detail is missing.
+Treat any supplied score as authoritative and do not recalculate it. For a CV
+review, write a natural, directly helpful response tailored to the user's
+request. Use the supplied review feedback as the only source for CV assessments
+and recommendations; do not invent or recalculate any finding. For a CV
+comparison, use `cv_comparison` and `cvs` as the only source for relative
+strengths, weaknesses, and recommendations; do not invent missing profiles.
+When `cv_comparison` is present, answer in natural conversational prose
+grounded only in that comparison: say who is stronger where, mention important
+weaknesses in flowing sentences, and finish with a clear recommendation. Do not
+paste structured sections, dump skill lists, echo field names, or ask the user
+for more CV details or focus areas when comparison results are already
+available. When `cv_review` is present and `cv_comparison` is not, answer from
+that review; never claim you lack access to an uploaded CV when `cv`, `cvs`,
+`cv_review`, `cv_comparison`, or a successful action tool result already
+contains profile data. Do not follow a fixed report layout. Mention a
 numerical CV score only when one is supplied, and never mention that a score is
 absent. Do not expose implementation language such as validation, criteria,
 state, or internal field names. Mention when the scrape was truncated and how
@@ -1934,6 +2308,9 @@ def response_context(state: ConversationState) -> dict[str, Any]:
             job["description"] = short_text(job["description"], 1200)
     matches: list[dict[str, Any]] = [
         {
+            "cv_id": item.get("cv_id"),
+            "cv_filename": item.get("cv_filename"),
+            "job_key": item.get("job_key"),
             "title": item["job_card"].get("title"),
             "company": item["job_card"].get("company"),
             "url": item["job_card"].get("url"),
@@ -1942,6 +2319,9 @@ def response_context(state: ConversationState) -> dict[str, Any]:
             "review_reasons": (item["score"].get("review_reasons") or [])[:5],
         }
         for item in (jobs_state.get("matches") or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("job_card"), dict)
+        and isinstance(item.get("score"), dict)
     ]
     cv_review: Any = cv_state.get("review")
     if not isinstance(cv_review, dict) and isinstance(selected_cv, dict):
@@ -2041,18 +2421,51 @@ def format_search_results(state: ConversationState) -> str | None:
     return "\n".join(lines).strip()
 
 
-def bounded_conversation(state: ConversationState) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
-    for message in (state.get("messages") or [])[-MAX_CONTEXT_MESSAGES:]:
-        role: str = (
-            "assistant" if message_role(message) in {"ai", "assistant"} else "user"
-        )
-        result.append(
-            {
-                "role": role,
-                "content": short_text(message_text(message), 1800),
-            }
-        )
+def bounded_conversation(state: ConversationState) -> list[Any]:
+    messages: list[Any] = list(state.get("messages") or [])[-MAX_CONTEXT_MESSAGES:]
+    while messages and message_role(messages[0]) in {"tool"}:
+        messages = messages[1:]
+
+    result: list[Any] = []
+    for message in messages:
+        role_name: str = message_role(message)
+        if role_name in {"tool"}:
+            tool_call_id: str = ""
+            tool_name: str = ""
+            if isinstance(message, dict):
+                tool_call_id = str(message.get("tool_call_id") or "")
+                tool_name = str(message.get("name") or "")
+            else:
+                tool_call_id = str(getattr(message, "tool_call_id", "") or "")
+                tool_name = str(getattr(message, "name", "") or "")
+            if not tool_call_id:
+                continue
+            result.append(
+                ToolMessage(
+                    content=short_text(message_text(message), 1800),
+                    tool_call_id=tool_call_id,
+                    name=tool_name or None,
+                )
+            )
+            continue
+
+        if role_name in {"ai", "assistant"}:
+            tool_calls: Any = (
+                message.get("tool_calls")
+                if isinstance(message, dict)
+                else getattr(message, "tool_calls", None)
+            )
+            if tool_calls:
+                result.append(message)
+                continue
+            content: str = short_text(message_text(message), 1800)
+            if content:
+                result.append({"role": "assistant", "content": content})
+            continue
+
+        content = short_text(message_text(message), 1800)
+        if content:
+            result.append({"role": "user", "content": content})
     return result
 
 
@@ -2124,6 +2537,7 @@ def build_cv_subagent_graph(chat_model: ChatModel | None = None) -> Any:
             state,
             "review_cv",
             await run_cv_review(state, review_graph),
+            emit_result=True,
         )
 
     async def compare_node(state: ConversationState) -> dict[str, Any]:
@@ -2131,6 +2545,7 @@ def build_cv_subagent_graph(chat_model: ChatModel | None = None) -> Any:
             state,
             "compare_cvs",
             await run_cv_comparison(state, selected_model),
+            emit_result=True,
         )
 
     builder: StateGraph = StateGraph(ConversationState)
@@ -2189,6 +2604,7 @@ def build_job_subagent_graph() -> Any:
             state,
             "search_jobs",
             await scrape_jobs_with_mcp(state),
+            emit_result=True,
         )
 
     async def extract_node(state: ConversationState) -> dict[str, Any]:
@@ -2196,6 +2612,7 @@ def build_job_subagent_graph() -> Any:
             state,
             "extract_job",
             await extract_pasted_job(state),
+            emit_result=True,
         )
 
     async def match_node(state: ConversationState) -> dict[str, Any]:
@@ -2203,6 +2620,7 @@ def build_job_subagent_graph() -> Any:
             state,
             "match_jobs",
             await calculate_job_matches(state),
+            emit_result=True,
         )
 
     builder: StateGraph = StateGraph(ConversationState)
