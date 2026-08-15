@@ -246,9 +246,8 @@ class CvService:
         if extraction is None:
             return None
 
-        cv_text = validate_extracted_text(
-            (await self._repository.get_document(extraction.document_id)).extracted_text
-        )
+        document = await self._repository.get_document(extraction.document_id)
+        cv_text = validate_extracted_text(document.extracted_text)
         cv_result = _result_without_source_text(extraction.extraction_result)
         matching_features = extraction.matching_features
         if not isinstance(matching_features, dict) or not matching_features:
@@ -257,10 +256,19 @@ class CvService:
         cv_result["matching_features"] = _json_safe(matching_features)
         cv_result["validation_status"] = "valid"
         return {
-            "cv_text": cv_text,
-            "cv_result": cv_result,
-            "cv_features": _json_safe(matching_features),
-            "cv_needs_extraction": False,
+            "cv": {
+                "documents": [
+                    {
+                        "id": str(extraction.document_id),
+                        "filename": str(document.filename or "cv.pdf"),
+                        "cv_text": cv_text,
+                        "cv_result": cv_result,
+                        "cv_features": _json_safe(matching_features),
+                        "cv_review": None,
+                    }
+                ],
+                "needs_extraction": False,
+            }
         }
 
     async def _get_extracted_text(self, cv_id: UUID) -> str:

@@ -259,11 +259,11 @@ class ChatService:
             else:
                 graph_input.update(
                     {
-                        "cv_text": None,
-                        "cv_result": None,
-                        "cv_features": None,
-                        "cv_needs_extraction": False,
-                        "cv_review": None,
+                        "cv": {
+                            "documents": [],
+                            "needs_extraction": False,
+                            "review": None,
+                        }
                     }
                 )
 
