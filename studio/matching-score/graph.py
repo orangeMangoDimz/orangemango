@@ -20,6 +20,10 @@ WEIGHTS = {
     "salary": 2,
 }
 
+CONFIRMED_MATCH_SCORE: float = 80.0
+MIN_SCORE_COVERAGE: float = 0.70
+FitVerdict = Literal["yes", "no", "uncertain"]
+
 
 SKILL_ALIASES = {
     "js": "JavaScript",
@@ -832,6 +836,12 @@ def score_match(
     decision = "needs_review" if review_reasons else "ready"
 
     normalized_score = (total / applicable_weight * 100) if applicable_weight else None
+    score_coverage = round(applicable_weight / sum(WEIGHTS.values()), 4)
+    fit_verdict, verdict_reason = classify_fit_verdict(
+        normalized_score=normalized_score,
+        score_coverage=score_coverage,
+        decision=decision,
+    )
 
     return {
         "total_score": round(total, 2),
@@ -840,8 +850,10 @@ def score_match(
         else None,
         "max_score": 100,
         "applicable_weight": applicable_weight,
-        "score_coverage": round(applicable_weight / sum(WEIGHTS.values()), 4),
+        "score_coverage": score_coverage,
         "decision": decision,
+        "fit_verdict": fit_verdict,
+        "verdict_reason": verdict_reason,
         "review_reasons": review_reasons,
         "dimensions": dimensions,
         "skills": {
@@ -861,6 +873,35 @@ def score_match(
         "confirmation_required": confirmation_required,
         "warnings": warnings,
     }
+
+
+def classify_fit_verdict(
+    *,
+    normalized_score: float | None,
+    score_coverage: float | None,
+    decision: str | None,
+) -> tuple[FitVerdict, str]:
+    coverage = float(score_coverage or 0.0)
+    if decision != "ready" or coverage < MIN_SCORE_COVERAGE:
+        return (
+            "uncertain",
+            "Insufficient evidence: score coverage is below the confirmation threshold "
+            "or the match still needs review.",
+        )
+    if normalized_score is None:
+        return (
+            "uncertain",
+            "Insufficient evidence: no normalized score is available.",
+        )
+    if float(normalized_score) >= CONFIRMED_MATCH_SCORE:
+        return (
+            "yes",
+            "Confirmed match: score is at least 80 with sufficient coverage.",
+        )
+    return (
+        "no",
+        "Confirmed non-match: score is below 80 with sufficient coverage.",
+    )
 
 
 class MatchingState(TypedDict, total=False):

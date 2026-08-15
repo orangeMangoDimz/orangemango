@@ -27,7 +27,9 @@ def test_is_vague_cv_feedback_matches_how_about_this_with_upload_marker() -> Non
     assert chatbot_graph.is_vague_cv_feedback(text) is True
 
 
-def test_ingest_appends_new_cv_and_preserves_existing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_appends_new_cv_and_preserves_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     existing = [
         _cv_doc(
             doc_id="1",
@@ -80,7 +82,11 @@ def test_ingest_without_upload_does_not_clear_comparison() -> None:
                     features={"role_tags": ["Backend Engineer"]},
                 )
             ],
-            "comparison": {"overview": "keep me", "candidates": [], "recommendation": "a"},
+            "comparison": {
+                "overview": "keep me",
+                "candidates": [],
+                "recommendation": "a",
+            },
         },
     }
 
@@ -133,6 +139,7 @@ def test_route_forces_compare_for_vague_multi_cv_feedback(
         selected_job_keys = None
         scrape_request = chatbot_graph.ScrapeRequest()
         needs_cv_features = False
+        is_follow_up = False
 
     class FakeRouter:
         async def ainvoke(self, _messages: list[Any]) -> FakeDecision:
@@ -184,6 +191,7 @@ def _fake_router(
     score_requested: bool = False,
     needs_cv_features: bool = False,
     selected_cv_id: str | None = None,
+    is_follow_up: bool = False,
 ) -> None:
     class FakeDecision:
         def __init__(self) -> None:
@@ -197,6 +205,7 @@ def _fake_router(
             self.review_mode_reason = None
             self.needs_cv_text = False
             self.needs_cv_features = needs_cv_features
+            self.is_follow_up = is_follow_up
             self.selected_cv_id = selected_cv_id
             self.selected_job_keys = None
             self.scrape_request = chatbot_graph.ScrapeRequest()
@@ -421,3 +430,145 @@ def test_route_message_keeps_plain_search_as_search_jobs(
     assert result["router"]["route"] == "search_jobs"
     assert result["selection"]["job_source"] == "search"
     assert result["selection"]["score_requested"] is False
+
+
+def test_route_message_coerces_follow_up_to_respond(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {
+        "messages": [
+            {"role": "user", "content": "Rate this CV"},
+            {
+                "role": "assistant",
+                "content": "Your CV has an overall score of 75 out of 100.",
+            },
+            {"role": "user", "content": "I mean 1 - 5"},
+        ],
+        "cv": {
+            "documents": _extracted_docs()[:1],
+            "needs_extraction": False,
+            "review": {
+                "status": "complete",
+                "mode": "scored",
+                "overall_score": 75.0,
+                "feedback": [{"title": "Strong summary"}],
+            },
+        },
+        "router": {"completed_actions": []},
+        "selection": {},
+        "jobs": {"results": []},
+    }
+    _fake_router(monkeypatch, route="review_cv", is_follow_up=True)
+
+    result = asyncio.run(chatbot_graph.route_message(state, chatbot_graph.ChatModel()))
+
+    assert result["router"]["route"] == "respond"
+    assert "follow" in result["router"]["route_reason"].lower()
+
+
+def test_router_recent_conversation_skips_tool_call_shells() -> None:
+    state: dict[str, Any] = {
+        "messages": [
+            {"role": "user", "content": "Rate this CV"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "1", "name": "review_cv", "args": {}}],
+            },
+            {
+                "role": "tool",
+                "name": "review_cv",
+                "tool_call_id": "1",
+                "content": '{"ok": true, "overall_score": 75}',
+            },
+            {
+                "role": "assistant",
+                "content": "Your CV scored 75 out of 100.",
+            },
+            {"role": "user", "content": "I mean 1 - 5"},
+        ]
+    }
+
+    history = chatbot_graph.router_recent_conversation(state)
+
+    assert history == [
+        {"role": "user", "content": "Rate this CV"},
+        {"role": "assistant", "content": "Your CV scored 75 out of 100."},
+        {"role": "user", "content": "I mean 1 - 5"},
+    ]
+
+
+def test_review_cv_workflow_ends_at_respond() -> None:
+    after_review: dict[str, Any] = {
+        "cv": {
+            "documents": _extracted_docs()[:1],
+            "needs_extraction": False,
+            "review": {"status": "complete", "overall_score": 75.0},
+        },
+        "router": {
+            "route": "review_cv",
+            "completed_actions": ["review_cv"],
+        },
+        "selection": {},
+        "jobs": {"results": []},
+    }
+
+    assert chatbot_graph.route_after_cv_subagent(after_review) == "respond"
+
+
+def test_route_message_reuses_existing_review_for_improve_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review = {
+        "status": "partial",
+        "mode": "general",
+        "focus": None,
+        "target_role": None,
+        "overall_score": None,
+        "feedback": [
+            {
+                "title": "Strong Summary Statement",
+                "observation": "The summary highlights backend skills.",
+                "recommendation": "Add a metric.",
+            }
+        ],
+    }
+    state: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "This is my cv, what do u think about this?\n[PDF CV uploaded separately]",
+            },
+            {
+                "role": "assistant",
+                "content": "Your CV has several strengths and areas for improvement.",
+            },
+            {"role": "user", "content": "What should I improve based on my CV?"},
+        ],
+        "cv": {
+            "documents": _extracted_docs()[:1],
+            "needs_extraction": False,
+            "review": review,
+        },
+        "router": {"completed_actions": []},
+        "selection": {},
+        "jobs": {"results": []},
+        "action_results": {},
+    }
+    fingerprint = chatbot_graph.action_fingerprint(
+        "review_cv",
+        {**state, "selection": {"review_mode": "general"}},
+    )
+    state["action_results"] = {
+        "review_cv": {
+            "fingerprint": fingerprint,
+            "executed_at": "2026-08-15T10:00:00+00:00",
+            "snapshot": {"cv": {"review": review}},
+        }
+    }
+    _fake_router(monkeypatch, route="review_cv", is_follow_up=False)
+
+    result = asyncio.run(chatbot_graph.route_message(state, chatbot_graph.ChatModel()))
+
+    assert result["router"]["route"] == "respond"
+    assert result["cv"]["review"]["feedback"][0]["title"] == "Strong Summary Statement"
