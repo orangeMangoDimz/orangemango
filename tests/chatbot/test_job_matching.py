@@ -8,7 +8,9 @@ import pytest
 from studio.chatbot import graph as chatbot_graph
 
 
-def _job(title: str, *, url: str = "", company: str = "", description: str = "") -> dict[str, Any]:
+def _job(
+    title: str, *, url: str = "", company: str = "", description: str = ""
+) -> dict[str, Any]:
     return {
         "job_card": {
             "title": title,
@@ -130,3 +132,40 @@ def test_calculate_job_matches_builds_cv_job_matrix(
     assert matches[0]["job_key"] == "url:https://example.com/backend"
     assert {item["cv_id"] for item in matches} == {"cv-a", "cv-b"}
     assert {item["job_card"]["title"] for item in matches} == {"Backend", "Frontend"}
+
+
+def test_classify_fit_verdict_confirmed_yes() -> None:
+    score_module = chatbot_graph.matching_score_module
+    verdict, reason = score_module.classify_fit_verdict(
+        normalized_score=88.0,
+        score_coverage=0.75,
+        decision="ready",
+    )
+    assert verdict == "yes"
+    assert "80" in reason or "confirmed" in reason.lower() or "match" in reason.lower()
+
+
+def test_classify_fit_verdict_confirmed_no() -> None:
+    score_module = chatbot_graph.matching_score_module
+    verdict, reason = score_module.classify_fit_verdict(
+        normalized_score=40.0,
+        score_coverage=0.8,
+        decision="ready",
+    )
+    assert verdict == "no"
+    assert reason
+
+
+def test_classify_fit_verdict_sparse_score_is_uncertain() -> None:
+    score_module = chatbot_graph.matching_score_module
+    verdict, reason = score_module.classify_fit_verdict(
+        normalized_score=100.0,
+        score_coverage=0.3,
+        decision="needs_review",
+    )
+    assert verdict == "uncertain"
+    assert (
+        "coverage" in reason.lower()
+        or "evidence" in reason.lower()
+        or "review" in reason.lower()
+    )

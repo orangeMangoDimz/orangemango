@@ -34,6 +34,7 @@ import json
 import re
 import sys
 import uuid
+from datetime import datetime, timezone
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -53,9 +54,7 @@ from app.services.cv_document import extract_pdf_text, validate_pdf_upload
 
 
 def _load_graph(path: Path, module_name: str) -> ModuleType:
-    spec: ModuleSpec | None = importlib.util.spec_from_file_location(
-        module_name, path
-    )
+    spec: ModuleSpec | None = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load child graph module from {path}")
 
@@ -75,9 +74,7 @@ JOB_GRAPH_PATH: Path = STUDIO_ROOT / "job-extraction" / "graph.py"
 MATCHING_SCORE_GRAPH_PATH: Path = STUDIO_ROOT / "matching-score" / "graph.py"
 CV_REVIEW_GRAPH_PATH: Path = STUDIO_ROOT / "cv-review" / "graph.py"
 
-cv_module: ModuleType = _load_graph(
-    CV_GRAPH_PATH, "orangemango_chatbot_cv_extraction"
-)
+cv_module: ModuleType = _load_graph(CV_GRAPH_PATH, "orangemango_chatbot_cv_extraction")
 job_module: ModuleType = _load_graph(
     JOB_GRAPH_PATH, "orangemango_chatbot_job_extraction"
 )
@@ -106,6 +103,8 @@ MAX_REQUIREMENTS: int = 12
 MAX_REQUIREMENT_CHARS: int = 360
 MAX_ROUTER_CHARS: int = 12000
 MAX_CONTEXT_MESSAGES: int = 8
+MAX_ROUTER_HISTORY_MESSAGES: int = 6
+MAX_ROUTER_HISTORY_CHARS: int = 400
 
 
 async def load_scrape_jobs_tool() -> Any:
@@ -328,9 +327,7 @@ def with_message_content(message: Any, content: str | list[dict[str, Any]]) -> A
             }
         return updated
 
-    additional: dict[str, Any] = dict(
-        getattr(message, "additional_kwargs", None) or {}
-    )
+    additional: dict[str, Any] = dict(getattr(message, "additional_kwargs", None) or {})
     additional.pop("pending_cv_upload", None)
     additional.pop("pending_cv_uploads", None)
     if hasattr(message, "model_copy"):
@@ -465,7 +462,21 @@ CV_FEATURE_INTENTS: frozenset[str] = frozenset(
 MAX_AGENT_ACTIONS: int = 4
 MAX_CV_DOCUMENTS: int = 5
 MAX_ACTION_RESULT_CHARS: int = 6000
+SEARCH_RESULT_TTL_SECONDS: int = 24 * 60 * 60
 PDF_UPLOAD_MARKER: str = "[PDF CV uploaded separately]"
+EXPLICIT_REFRESH_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:"
+    r"refresh|"
+    r"search\s+again|"
+    r"review\s+again|"
+    r"match\s+again|"
+    r"compare\s+again|"
+    r"re-?run|"
+    r"re-?search|"
+    r"re-?review"
+    r")\b",
+    re.IGNORECASE,
+)
 VAGUE_CV_FEEDBACK_PATTERN: re.Pattern[str] = re.compile(
     r"^\s*(?:"
     r"what\s+do\s+(?:you|u)\s+think\??|"
@@ -546,6 +557,14 @@ class RouteDecision(BaseModel):
             "(role or job-type recommendations from uploaded CVs, CV Q&A)."
         ),
     )
+    is_follow_up: bool = Field(
+        default=False,
+        description=(
+            "True when the latest message continues, clarifies, or reformats an "
+            "already-available result (existing CV review, comparison, jobs, or "
+            "matches) without requesting a new tool action."
+        ),
+    )
     selected_cv_id: str | None = Field(
         default=None,
         max_length=80,
@@ -580,7 +599,9 @@ class CvComparisonResult(BaseModel):
     recommendation: str = Field(min_length=1, max_length=800)
 
 
-def merge_maps(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+def merge_maps(
+    left: dict[str, Any] | None, right: dict[str, Any] | None
+) -> dict[str, Any]:
     return {**(left or {}), **(right or {})}
 
 
@@ -593,6 +614,7 @@ class ConversationState(TypedDict, total=False):
     router: Annotated[dict[str, Any], merge_maps]
     selection: Annotated[dict[str, Any], merge_maps]
     jobs: Annotated[dict[str, Any], merge_maps]
+    action_results: Annotated[dict[str, Any], merge_maps]
     response: str | None
     errors: list[str]
 
@@ -625,6 +647,11 @@ def selection_bucket(state: ConversationState) -> dict[str, Any]:
 
 def jobs_bucket(state: ConversationState) -> dict[str, Any]:
     value = state.get("jobs")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def action_results_bucket(state: ConversationState) -> dict[str, Any]:
+    value = state.get("action_results")
     return dict(value) if isinstance(value, dict) else {}
 
 
@@ -666,7 +693,36 @@ def record_completed_action(
                 rest["messages"] = [*existing_messages, *result_messages]
             else:
                 rest["messages"] = result_messages
-    return {**rest, "router": {**nested, "completed_actions": actions}}
+    recorded: dict[str, Any] = {
+        **rest,
+        "router": {**nested, "completed_actions": actions},
+    }
+    snapshot: dict[str, Any] | None = reusable_action_snapshot(action, update, state)
+    if snapshot is None:
+        return recorded
+    merged_state: ConversationState = {
+        **state,
+        **{key: value for key, value in rest.items() if key != "messages"},
+    }
+    if isinstance(update.get("cv"), dict):
+        merged_state["cv"] = {**cv_bucket(state), **update["cv"]}
+    if isinstance(update.get("jobs"), dict):
+        merged_state["jobs"] = {**jobs_bucket(state), **update["jobs"]}
+    if isinstance(update.get("selection"), dict):
+        merged_state["selection"] = {**selection_bucket(state), **update["selection"]}
+    fingerprint: str | None = action_fingerprint(action, merged_state)
+    if not fingerprint:
+        return recorded
+    return {
+        **recorded,
+        "action_results": {
+            action: {
+                "fingerprint": fingerprint,
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "snapshot": snapshot,
+            }
+        },
+    }
 
 
 def slim_review_result(review: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -704,9 +760,7 @@ def slim_comparison_result(comparison: dict[str, Any] | None) -> dict[str, Any] 
             {
                 "filename": item.get("filename"),
                 "strengths": item.get("strengths") or [],
-                "weaknesses": item.get("weaknesses")
-                or item.get("gaps")
-                or [],
+                "weaknesses": item.get("weaknesses") or item.get("gaps") or [],
                 "summary": item.get("summary"),
             }
         )
@@ -727,12 +781,26 @@ def slim_job_card(card: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def slim_search_result(jobs_update: dict[str, Any], state: ConversationState) -> dict[str, Any]:
+def slim_search_result(
+    jobs_update: dict[str, Any], state: ConversationState
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = [
         item
-        for item in (jobs_update.get("results") or jobs_bucket(state).get("results") or [])
+        for item in (
+            jobs_update.get("results") or jobs_bucket(state).get("results") or []
+        )
         if isinstance(item, dict)
     ]
+    active_keys: Any = jobs_update.get("active_job_keys")
+    if not isinstance(active_keys, list) or not active_keys:
+        active_keys = jobs_bucket(state).get("active_job_keys")
+    if isinstance(active_keys, list) and active_keys:
+        wanted: set[str] = {str(key).strip() for key in active_keys if str(key).strip()}
+        results = [
+            item
+            for index, item in enumerate(results)
+            if job_selection_key(item, index) in wanted
+        ]
     jobs: list[dict[str, Any]] = []
     for item in results:
         card: dict[str, Any] = slim_job_card(
@@ -756,28 +824,96 @@ def slim_search_result(jobs_update: dict[str, Any], state: ConversationState) ->
 
 
 def slim_match_result(jobs_update: dict[str, Any]) -> dict[str, Any]:
-    matches: list[dict[str, Any]] = []
-    for item in jobs_update.get("matches") or []:
+    assessment: dict[str, Any] = build_match_assessment(
+        [item for item in (jobs_update.get("matches") or []) if isinstance(item, dict)]
+    )
+    return {
+        "match_count": assessment["match_count"],
+        "match_assessment": assessment,
+        "matches": assessment["matches"],
+    }
+
+
+def project_match_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    score: Any = item.get("score")
+    if not isinstance(score, dict):
+        score = {}
+    fit_verdict: str | None = score.get("fit_verdict")
+    verdict_reason: str | None = score.get("verdict_reason")
+    if fit_verdict not in {"yes", "no", "uncertain"}:
+        fit_verdict, verdict_reason = matching_score_module.classify_fit_verdict(
+            normalized_score=score.get("normalized_score"),
+            score_coverage=score.get("score_coverage"),
+            decision=score.get("decision"),
+        )
+    card: dict[str, Any] = slim_job_card(
+        item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+    )
+    projected: dict[str, Any] = {
+        "cv_id": item.get("cv_id"),
+        "cv_filename": item.get("cv_filename"),
+        "job_key": item.get("job_key"),
+        "job": card,
+        "title": card.get("title") or item.get("title"),
+        "company": card.get("company") or item.get("company"),
+        "url": card.get("url") or item.get("url"),
+        "fit_verdict": fit_verdict,
+        "verdict_reason": verdict_reason,
+        "decision": score.get("decision"),
+        "score_coverage": score.get("score_coverage"),
+        "review_reasons": list(score.get("review_reasons") or [])[:5],
+    }
+    normalized: Any = score.get("normalized_score")
+    if fit_verdict == "uncertain":
+        if normalized is not None:
+            projected["provisional_score"] = normalized
+    elif normalized is not None:
+        projected["score"] = normalized
+    return projected
+
+
+def build_match_assessment(matches: list[dict[str, Any]]) -> dict[str, Any]:
+    projected: list[dict[str, Any]] = []
+    yes_count = 0
+    no_count = 0
+    uncertain_count = 0
+    for item in matches:
         if not isinstance(item, dict):
             continue
-        score: Any = item.get("score")
-        matches.append(
-            {
-                "cv_id": item.get("cv_id"),
-                "cv_filename": item.get("cv_filename"),
-                "job_key": item.get("job_key"),
-                "job": slim_job_card(
-                    item.get("job_card")
-                    if isinstance(item.get("job_card"), dict)
-                    else None
-                ),
-                "normalized_score": (
-                    score.get("normalized_score") if isinstance(score, dict) else None
-                ),
-                "decision": score.get("decision") if isinstance(score, dict) else None,
-            }
-        )
-    return {"match_count": len(matches), "matches": matches}
+        row: dict[str, Any] | None = project_match_item(item)
+        if row is None:
+            continue
+        projected.append(row)
+        verdict: str = str(row.get("fit_verdict") or "uncertain")
+        if verdict == "yes":
+            yes_count += 1
+        elif verdict == "no":
+            no_count += 1
+        else:
+            uncertain_count += 1
+
+    aggregate: str
+    if not projected:
+        aggregate = "uncertain"
+    elif uncertain_count == len(projected):
+        aggregate = "uncertain"
+    elif yes_count == len(projected):
+        aggregate = "yes"
+    elif no_count == len(projected):
+        aggregate = "no"
+    elif yes_count > 0:
+        aggregate = "some"
+    else:
+        aggregate = "uncertain"
+
+    return {
+        "verdict": aggregate,
+        "match_count": len(projected),
+        "yes_count": yes_count,
+        "no_count": no_count,
+        "uncertain_count": uncertain_count,
+        "matches": projected,
+    }
 
 
 def slim_extract_job_result(
@@ -785,9 +921,7 @@ def slim_extract_job_result(
     state: ConversationState,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = [
-        item
-        for item in (jobs_update.get("results") or [])
-        if isinstance(item, dict)
+        item for item in (jobs_update.get("results") or []) if isinstance(item, dict)
     ]
     if not results:
         results = [
@@ -800,9 +934,7 @@ def slim_extract_job_result(
         "job_count": len(results),
         "validation_status": latest.get("validation_status"),
         "job": slim_job_card(
-            latest.get("job_card")
-            if isinstance(latest.get("job_card"), dict)
-            else None
+            latest.get("job_card") if isinstance(latest.get("job_card"), dict) else None
         ),
     }
 
@@ -823,7 +955,11 @@ def slim_action_result(
             review if isinstance(review, dict) else None
         )
         if slim is None:
-            return {"ok": False, "action": action, "errors": errors or ["CV review failed."]}
+            return {
+                "ok": False,
+                "action": action,
+                "errors": errors or ["CV review failed."],
+            }
         return {
             "ok": slim.get("status") != "unavailable",
             "action": action,
@@ -967,8 +1103,7 @@ def extracted_cv_documents(state: ConversationState) -> list[dict[str, Any]]:
     return [
         document
         for document in state_cv_documents(state)
-        if (document.get("cv_text") or "").strip()
-        and document.get("cv_features")
+        if (document.get("cv_text") or "").strip() and document.get("cv_features")
     ]
 
 
@@ -1037,20 +1172,365 @@ def resolve_selected_jobs(state: ConversationState) -> list[dict[str, Any]]:
         if isinstance(item, dict) and item.get("validation_status") == "valid"
     ]
     raw_keys: Any = selection_bucket(state).get("selected_job_keys")
-    if not isinstance(raw_keys, list) or not raw_keys:
-        return results
-    wanted: set[str] = {
-        str(key).strip() for key in raw_keys if str(key).strip()
+    if isinstance(raw_keys, list) and raw_keys:
+        wanted: set[str] = {str(key).strip() for key in raw_keys if str(key).strip()}
+        if wanted:
+            selected: list[dict[str, Any]] = []
+            for index, item in enumerate(job_results):
+                if (
+                    not isinstance(item, dict)
+                    or item.get("validation_status") != "valid"
+                ):
+                    continue
+                if job_selection_key(item, index) in wanted:
+                    selected.append(item)
+            return selected or results
+    active_keys: Any = jobs_bucket(state).get("active_job_keys")
+    if isinstance(active_keys, list) and active_keys:
+        wanted = {str(key).strip() for key in active_keys if str(key).strip()}
+        if wanted:
+            selected = []
+            for index, item in enumerate(job_results):
+                if (
+                    not isinstance(item, dict)
+                    or item.get("validation_status") != "valid"
+                ):
+                    continue
+                if job_selection_key(item, index) in wanted:
+                    selected.append(item)
+            return selected
+    return results
+
+
+def canonical_json_hash(value: Any) -> str:
+    encoded: bytes = json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def normalize_fingerprint_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
+def is_explicit_refresh(text: str) -> bool:
+    return bool(EXPLICIT_REFRESH_PATTERN.search(text or ""))
+
+
+def cv_version(document: dict[str, Any] | None) -> str:
+    if not isinstance(document, dict):
+        return ""
+    text: str = (document.get("cv_text") or "").strip()
+    if text:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    features: Any = document.get("cv_features")
+    if isinstance(features, dict) and features:
+        return canonical_json_hash(features)
+    return str(document.get("id") or "")
+
+
+def job_content_version(item: dict[str, Any]) -> str:
+    features: Any = item.get("matching_features")
+    if isinstance(features, dict):
+        content_hash: Any = features.get("content_hash")
+        if content_hash:
+            return str(content_hash)
+    card: Any = item.get("job_card") if isinstance(item.get("job_card"), dict) else item
+    return canonical_json_hash(card or {})
+
+
+def normalize_scrape_request(request: dict[str, Any] | None) -> dict[str, Any]:
+    raw: dict[str, Any] = request if isinstance(request, dict) else {}
+    keywords: list[str] = sorted(
+        {
+            normalize_fingerprint_text(item)
+            for item in (raw.get("keywords") or [])
+            if normalize_fingerprint_text(item)
+        }
+    )
+    sites: list[str] = sorted(
+        {
+            normalize_fingerprint_text(item)
+            for item in (raw.get("sites") or [])
+            if normalize_fingerprint_text(item)
+        }
+    )
+    return {
+        "keywords": keywords,
+        "sites": sites,
+        "max_age_hours": raw.get("max_age_hours"),
     }
-    if not wanted:
-        return results
-    selected: list[dict[str, Any]] = []
-    for index, item in enumerate(job_results):
-        if not isinstance(item, dict) or item.get("validation_status") != "valid":
-            continue
-        if job_selection_key(item, index) in wanted:
-            selected.append(item)
-    return selected or results
+
+
+def parse_executed_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed: datetime = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def search_result_is_fresh(
+    entry: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    executed: datetime | None = parse_executed_at(entry.get("executed_at"))
+    if executed is None:
+        return False
+    current: datetime = now or datetime.now(timezone.utc)
+    return (current - executed).total_seconds() <= SEARCH_RESULT_TTL_SECONDS
+
+
+def stored_action_result(
+    state: ConversationState,
+    action: str,
+) -> dict[str, Any] | None:
+    entry: Any = action_results_bucket(state).get(action)
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def action_fingerprint(action: str, state: ConversationState) -> str | None:
+    selection: dict[str, Any] = selection_bucket(state)
+    if action == "review_cv":
+        target: dict[str, Any] | None = resolve_selected_cv(state)
+        if target is None:
+            documents: list[dict[str, Any]] = extracted_cv_documents(
+                state
+            ) or state_cv_documents(state)
+            target = documents[0] if documents else None
+        if target is None:
+            return None
+        return canonical_json_hash(
+            {
+                "action": "review_cv",
+                "cv_id": str(target.get("id") or ""),
+                "cv_version": cv_version(target),
+                "mode": selection.get("review_mode") or "general",
+                "focus": normalize_fingerprint_text(selection.get("review_focus")),
+                "target_role": normalize_fingerprint_text(
+                    selection.get("review_target_role")
+                ),
+            }
+        )
+    if action == "compare_cvs":
+        documents = extracted_cv_documents(state)
+        if len(documents) < 2:
+            return None
+        return canonical_json_hash(
+            {
+                "action": "compare_cvs",
+                "cvs": [
+                    {"id": str(doc.get("id") or ""), "version": cv_version(doc)}
+                    for doc in documents
+                ],
+            }
+        )
+    if action == "extract_job":
+        text: str = normalize_fingerprint_text(
+            selection.get("job_input_text") or last_user_text(state)
+        )
+        if not text:
+            return None
+        return canonical_json_hash({"action": "extract_job", "text": text})
+    if action == "search_jobs":
+        request: dict[str, Any] = normalize_scrape_request(
+            jobs_bucket(state).get("scrape_request")
+        )
+        return canonical_json_hash({"action": "search_jobs", **request})
+    if action == "match_jobs":
+        cvs: list[dict[str, Any]] = resolve_selected_cvs(state)
+        jobs: list[dict[str, Any]] = resolve_selected_jobs(state)
+        if not cvs or not jobs:
+            return None
+        payload: dict[str, Any] = {
+            "action": "match_jobs",
+            "cvs": [
+                {"id": str(doc.get("id") or ""), "version": cv_version(doc)}
+                for doc in cvs
+            ],
+            "jobs": [
+                {
+                    "key": job_selection_key(item, index),
+                    "version": job_content_version(item),
+                }
+                for index, item in enumerate(jobs)
+            ],
+        }
+        if selection.get("job_source") == "search":
+            payload["search"] = normalize_scrape_request(
+                jobs_bucket(state).get("scrape_request")
+            )
+        return canonical_json_hash(payload)
+    return None
+
+
+def action_result_is_reusable(
+    state: ConversationState,
+    action: str,
+    fingerprint: str | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if not fingerprint:
+        return False
+    entry: dict[str, Any] | None = stored_action_result(state, action)
+    if entry is None or entry.get("fingerprint") != fingerprint:
+        return False
+    snapshot: Any = entry.get("snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    if action == "search_jobs" and not search_result_is_fresh(entry, now=now):
+        return False
+    return True
+
+
+def current_search_is_reusable(state: ConversationState) -> bool:
+    return action_result_is_reusable(
+        state,
+        "search_jobs",
+        action_fingerprint("search_jobs", state),
+    )
+
+
+def reusable_action_snapshot(
+    action: AgentAction,
+    update: dict[str, Any],
+    state: ConversationState,
+) -> dict[str, Any] | None:
+    if action == "review_cv":
+        review: Any = (update.get("cv") or {}).get("review")
+        if not isinstance(review, dict):
+            return None
+        if review.get("status") == "unavailable":
+            return None
+        if not (review.get("feedback") or review.get("overall_score") is not None):
+            return None
+        return {"cv": {"review": review}}
+    if action == "compare_cvs":
+        comparison: Any = (update.get("cv") or {}).get("comparison")
+        if not isinstance(comparison, dict):
+            return None
+        if not comparison.get("overview") or not comparison.get("candidates"):
+            return None
+        return {"cv": {"comparison": comparison}}
+    if action == "extract_job":
+        jobs_update: dict[str, Any] = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        results: list[dict[str, Any]] = [
+            item
+            for item in (jobs_update.get("results") or [])
+            if isinstance(item, dict)
+        ]
+        latest: dict[str, Any] | None = results[-1] if results else None
+        if latest is None or latest.get("validation_status") != "valid":
+            return None
+        return {
+            "jobs": {
+                "results": results,
+                "active_job_keys": [
+                    job_selection_key(latest, max(len(results) - 1, 0))
+                ],
+            }
+        }
+    if action == "search_jobs":
+        jobs_update = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        results = [
+            item
+            for item in (jobs_update.get("results") or [])
+            if isinstance(item, dict)
+        ]
+        if not results:
+            return None
+        keys: Any = jobs_update.get("active_job_keys")
+        if not isinstance(keys, list) or not keys:
+            keys = [
+                job_selection_key(item, index) for index, item in enumerate(results)
+            ]
+        return {
+            "jobs": {
+                "results": results,
+                "active_job_keys": keys,
+                "scrape_total": jobs_update.get("scrape_total", len(results)),
+                "scrape_truncated": bool(jobs_update.get("scrape_truncated")),
+            }
+        }
+    if action == "match_jobs":
+        jobs_update = (
+            dict(update.get("jobs")) if isinstance(update.get("jobs"), dict) else {}
+        )
+        matches: list[dict[str, Any]] = [
+            item
+            for item in (jobs_update.get("matches") or [])
+            if isinstance(item, dict)
+        ]
+        if not matches:
+            return None
+        return {"jobs": {"matches": matches}}
+    return None
+
+
+def apply_action_reuse(
+    state: ConversationState,
+    *,
+    route: RouteName,
+    route_reason: str,
+    latest: str,
+    selection: dict[str, Any],
+    jobs_update: dict[str, Any],
+) -> tuple[RouteName, str, dict[str, Any], dict[str, Any]]:
+    cv_update: dict[str, Any] = {}
+    if route not in USER_FACING_ACTIONS:
+        return route, route_reason, cv_update, jobs_update
+    if is_explicit_refresh(latest):
+        return route, route_reason, cv_update, jobs_update
+    gated: ConversationState = {
+        **state,
+        "selection": selection,
+        "jobs": {**jobs_bucket(state), **jobs_update},
+    }
+    fingerprint: str | None = action_fingerprint(route, gated)
+    if not action_result_is_reusable(gated, route, fingerprint):
+        return route, route_reason, cv_update, jobs_update
+    entry: dict[str, Any] = stored_action_result(state, route) or {}
+    snapshot: Any = entry.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return route, route_reason, cv_update, jobs_update
+    if isinstance(snapshot.get("cv"), dict):
+        cv_update = dict(snapshot["cv"])
+    if isinstance(snapshot.get("jobs"), dict):
+        jobs_update = {**jobs_update, **snapshot["jobs"]}
+    return (
+        "respond",
+        "Using the current stored result for this request.",
+        cv_update,
+        jobs_update,
+    )
+
+
+def job_results_for_display(state: ConversationState) -> list[dict[str, Any]]:
+    jobs_state: dict[str, Any] = jobs_bucket(state)
+    active_keys: Any = jobs_state.get("active_job_keys")
+    selected_keys: Any = selection_bucket(state).get("selected_job_keys")
+    if (isinstance(active_keys, list) and active_keys) or (
+        isinstance(selected_keys, list) and selected_keys
+    ):
+        return resolve_selected_jobs(state)
+    return [
+        item for item in (jobs_state.get("results") or []) if isinstance(item, dict)
+    ]
 
 
 def short_list(value: Any, limit: int, item_limit: int) -> list[str]:
@@ -1170,14 +1650,9 @@ def compact_scrape_response(raw: Any) -> dict[str, Any]:
     cards: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for job in extract_job_payloads(decoded):
+    for index, job in enumerate(extract_job_payloads(decoded)):
         card: dict[str, Any] = compact_job_card(job, envelope)
-        if card["url"]:
-            key: str = "url:" + card["url"].casefold()
-        else:
-            key = "title-company:" + "::".join(
-                (card["title"].casefold(), card["company"].casefold())
-            )
+        key: str = job_selection_key({"job_card": card}, index)
         if key in seen:
             continue
         seen.add(key)
@@ -1237,6 +1712,40 @@ def last_user_text(state: ConversationState) -> str:
         if message_role(message) in {"human", "user"}:
             return message_text(message)
     return ""
+
+
+def router_recent_conversation(state: ConversationState) -> list[dict[str, str]]:
+    history: list[dict[str, str]] = []
+    for message in state.get("messages") or []:
+        role_name: str = message_role(message)
+        if role_name in {"tool"}:
+            continue
+        tool_calls: Any = (
+            message.get("tool_calls")
+            if isinstance(message, dict)
+            else getattr(message, "tool_calls", None)
+        )
+        if tool_calls:
+            continue
+        content: str = short_text(message_text(message), MAX_ROUTER_HISTORY_CHARS)
+        if not content:
+            continue
+        if role_name in {"human", "user"}:
+            history.append({"role": "user", "content": content})
+        elif role_name in {"ai", "assistant"}:
+            history.append({"role": "assistant", "content": content})
+    return history[-MAX_ROUTER_HISTORY_MESSAGES:]
+
+
+def existing_cv_review(state: ConversationState) -> dict[str, Any] | None:
+    review: Any = cv_bucket(state).get("review")
+    if isinstance(review, dict):
+        return review
+    for doc in state_cv_documents(state):
+        candidate: Any = doc.get("cv_review")
+        if isinstance(candidate, dict):
+            return candidate
+    return None
 
 
 def is_vague_cv_feedback(text: str) -> bool:
@@ -1384,9 +1893,6 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
             "selected_cv_id": None,
             "selected_job_keys": None,
         },
-        "jobs": {
-            "matches": [],
-        },
         "response": None,
         "errors": [],
     }
@@ -1500,12 +2006,28 @@ Routes:
   about which roles or job types fit the uploaded CV profiles when no live job
   search or job-posting match is requested.
 
-Never choose a route listed in completed_actions. Choose respond when the user
-request is satisfied by the available state, including questions like "what type
-of jobs suit all of them?" when CVs are already loaded. When the user explicitly
-asks for CV review or CV comparison, keep review_cv or compare_cvs as the route
-even if cv_available is false or extracted_cv_count is below cv_count: the CV
-workflow will extract missing profiles before that goal. Never choose extract_cv
+Use recent_conversation together with latest_user_message. Prefer respond when
+the latest message continues, clarifies, reformats, or asks to reinterpret an
+already-available result. Examples: changing a score scale (1-5, 1-10, percent),
+asking for a shorter or longer rewrite of the prior review, clarifying what a
+previous answer meant, or asking follow-up questions about existing jobs,
+matches, reviews, or comparisons. In those cases set is_follow_up=true and do
+not choose review_cv, compare_cvs, search_jobs, match_jobs, extract_job, or
+extract_cv. Set is_follow_up=false only when the user requests a new action.
+
+Never choose a route listed in completed_actions; that list covers only the
+current user message. When a compatible current result is already available, the
+workflow reuses it. Choose respond for questions about that current result. If
+the user explicitly asks to refresh, rerun, search again, or review again,
+choose the action route even when a current result exists. Do not invent
+freshness claims. Choose respond when the user request is satisfied by the
+available state, including questions like "what type of jobs suit all of them?"
+when CVs are already loaded. When cv_review_available is true and the user is
+only asking how to present or convert that review, choose respond. When the user
+explicitly asks for a fresh CV review or CV comparison, keep review_cv or
+compare_cvs as the route even if cv_available is false or extracted_cv_count is
+below cv_count: the CV workflow will extract missing profiles before that goal.
+Never choose extract_cv
 when extracted_cv_count equals cv_count and the user did not explicitly ask to
 re-extract. Do not choose extract_cv for role or job-type recommendations; choose
 respond and set needs_cv_features=true. Do not choose match_jobs unless the user
@@ -1517,6 +2039,8 @@ broad feedback:
   compare_cvs
 - if cv_count is 2 or more and the user names one CV, choose review_cv and set
   selected_cv_id
+Do not apply those broad-feedback rules when recent_conversation already contains
+a CV review or comparison answer and the latest message only follows up on it.
 Uploading another CV with a broad feedback request after earlier CVs already
 exist is a compare_cvs request, not a single-CV review.
 When the user asks to compare, contrast, rank, or choose between multiple
@@ -1636,14 +2160,25 @@ async def route_message(
             if card.get("company"):
                 entry["company"] = card.get("company")
         job_catalog.append(entry)
+    review: dict[str, Any] | None = existing_cv_review(state)
+    review_summary: dict[str, Any] | None = None
+    if review is not None:
+        review_summary = {
+            "status": review.get("status"),
+            "mode": review.get("mode"),
+            "overall_score": review.get("overall_score"),
+            "score_scale": 100 if review.get("overall_score") is not None else None,
+            "feedback_count": len(review.get("feedback") or []),
+        }
     context: dict[str, Any] = {
         "latest_user_message": latest[:MAX_ROUTER_CHARS],
+        "recent_conversation": router_recent_conversation(state),
         "cv_available": bool(extracted_documents),
         "cv_text_available": any(
             (doc.get("cv_text") or "").strip() for doc in documents
         ),
-        "cv_review_available": isinstance(cv_bucket(state).get("review"), dict)
-        or any(isinstance(doc.get("cv_review"), dict) for doc in documents),
+        "cv_review_available": review is not None,
+        "cv_review_summary": review_summary,
         "cv_comparison_available": isinstance(cv_bucket(state).get("comparison"), dict),
         "cv_count": len(documents),
         "extracted_cv_count": len(extracted_documents),
@@ -1703,6 +2238,11 @@ async def route_message(
                 selected_job_keys = filtered_keys
         route: RouteName = decision.route
         route_reason: str = decision.reason
+        if decision.is_follow_up and route in AGENT_ACTIONS:
+            route = "respond"
+            route_reason = "The latest message follows up on already-loaded results."
+            selected_cv_id = None
+            selected_job_keys = None
         if (
             route in {"review_cv", "extract_cv"}
             and len(documents) >= 2
@@ -1733,44 +2273,62 @@ async def route_message(
             selected_job_keys = None
         if route in CV_FEATURE_INTENTS:
             needs_cv_features = True
-        return {
+        selection: dict[str, Any] = {
+            "job_source": job_source,
+            "job_input_text": latest if job_source == "pasted" else None,
+            "score_requested": bool(decision.score_requested)
+            if route == "match_jobs"
+            else False,
+            "review_target_role": (
+                decision.review_target_role.strip()
+                if route == "review_cv" and decision.review_target_role
+                else None
+            ),
+            "review_mode": (
+                decision.review_mode if route == "review_cv" else "general"
+            ),
+            "review_focus": (
+                decision.review_focus.strip()
+                if route == "review_cv" and decision.review_focus
+                else None
+            ),
+            "review_mode_reason": (
+                decision.review_mode_reason.strip()
+                if route == "review_cv" and decision.review_mode_reason
+                else None
+            ),
+            "selected_cv_id": selected_cv_id
+            if route in {"review_cv", "match_jobs"}
+            else None,
+            "selected_job_keys": selected_job_keys if route == "match_jobs" else None,
+        }
+        jobs_update: dict[str, Any] = {
+            "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
+        }
+        reused_cv: dict[str, Any]
+        route, route_reason, reused_cv, jobs_update = apply_action_reuse(
+            state,
+            route=route,
+            route_reason=route_reason,
+            latest=latest,
+            selection=selection,
+            jobs_update=jobs_update,
+        )
+        if route == "respond" and reused_cv:
+            needs_cv_features = True
+        result: dict[str, Any] = {
             "router": {
                 "route": route,
                 "route_reason": route_reason,
                 "needs_cv_text": needs_cv_text,
                 "needs_cv_features": needs_cv_features,
             },
-            "selection": {
-                "job_source": job_source,
-                "job_input_text": latest if job_source == "pasted" else None,
-                "score_requested": bool(decision.score_requested)
-                if route == "match_jobs"
-                else False,
-                "review_target_role": (
-                    decision.review_target_role.strip()
-                    if route == "review_cv" and decision.review_target_role
-                    else None
-                ),
-                "review_mode": (
-                    decision.review_mode if route == "review_cv" else "general"
-                ),
-                "review_focus": (
-                    decision.review_focus.strip()
-                    if route == "review_cv" and decision.review_focus
-                    else None
-                ),
-                "review_mode_reason": (
-                    decision.review_mode_reason.strip()
-                    if route == "review_cv" and decision.review_mode_reason
-                    else None
-                ),
-                "selected_cv_id": selected_cv_id if route in {"review_cv", "match_jobs"} else None,
-                "selected_job_keys": selected_job_keys if route == "match_jobs" else None,
-            },
-            "jobs": {
-                "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
-            },
+            "selection": selection,
+            "jobs": jobs_update,
         }
+        if reused_cv:
+            result["cv"] = reused_cv
+        return result
     except Exception as exc:
         return {
             "router": {
@@ -1841,7 +2399,8 @@ async def run_cv_subagent(state: ConversationState) -> dict[str, Any]:
                     + str(compact.get("validation_errors") or compact.get("warnings"))
                 )
                 continue
-            updated_documents.append( {
+            updated_documents.append(
+                {
                     **document,
                     "cv_result": compact,
                     "cv_features": compact.get("matching_features"),
@@ -1986,9 +2545,7 @@ async def run_cv_comparison(
         }
         for doc in documents[:MAX_CV_DOCUMENTS]
     ]
-    comparer: Any = (chat_model or ChatModel.from_env()).structured(
-        CvComparisonResult
-    )
+    comparer: Any = (chat_model or ChatModel.from_env()).structured(CvComparisonResult)
     try:
         comparison: CvComparisonResult = await comparer.ainvoke(
             [
@@ -2016,7 +2573,9 @@ def route_into_cv_subagent(state: ConversationState) -> str:
     has_text: bool = any((doc.get("cv_text") or "").strip() for doc in documents)
     if not has_text:
         return "missing_cv"
-    if cvs_need_extraction(state) or not any(doc.get("cv_features") for doc in documents):
+    if cvs_need_extraction(state) or not any(
+        doc.get("cv_features") for doc in documents
+    ):
         return "extract_cv"
     route: RouteName | None = router_bucket(state).get("route")
     if route == "compare_cvs":
@@ -2073,6 +2632,10 @@ async def scrape_jobs_with_mcp(state: ConversationState) -> dict[str, Any]:
                 "scrape_total": compact["total"],
                 "scrape_truncated": compact["truncated"],
                 "results": merge_job_results(existing_results, job_results),
+                "active_job_keys": [
+                    job_selection_key(item, index)
+                    for index, item in enumerate(job_results)
+                ],
                 "matches": [],
             },
             "errors": state_errors(
@@ -2164,6 +2727,7 @@ async def extract_pasted_job(state: ConversationState) -> dict[str, Any]:
             "scrape_total": jobs_bucket(state).get("scrape_total", 0),
             "scrape_truncated": jobs_bucket(state).get("scrape_truncated", False),
             "results": merge_job_results(existing_results, [result]),
+            "active_job_keys": [job_selection_key(result, 0)],
             "matches": [],
         },
         "errors": state_errors(state, errors),
@@ -2191,8 +2755,7 @@ async def calculate_job_matches(state: ConversationState) -> dict[str, Any]:
     usable_cvs: list[dict[str, Any]] = [
         document
         for document in selected_cvs
-        if isinstance(document.get("cv_result"), dict)
-        and document.get("cv_features")
+        if isinstance(document.get("cv_result"), dict) and document.get("cv_features")
     ]
     if not usable_cvs:
         return {
@@ -2277,7 +2840,16 @@ unavailable. Present extracted or searched jobs even when no score is available.
 Only discuss matching scores when one is present or the user explicitly
 requested matching. If matching was requested but a valid CV is missing, explain
 that the jobs are available and the CV is needed only to calculate the score.
-Use the complete `jobs` list in the state summary as the source of truth for job
+When `match_assessment` is present, treat it as authoritative for job-to-CV fit
+questions. Answer the user's question first using the aggregate verdict:
+- yes: say the jobs match
+- no: say the jobs do not match
+- some: say some jobs match and some do not
+- uncertain: say the available job data cannot confirm a match
+Then name the relevant jobs and cite score, provisional_score, score_coverage,
+and review_reasons as supporting evidence. Never call a provisional_score a
+perfect or confirmed match. Prefer confirmed `score` values over provisional
+ones. Use the complete `jobs` list in the state summary as the source of truth for job
 list answers. For a normal search/list request, enumerate every entry in `jobs`;
 do not limit the answer to five jobs or choose only a subset. The number of
 numbered jobs should match `available_job_count`. If the user explicitly asks
@@ -2300,8 +2872,11 @@ compare_cvs tool result is present, answer from it and never claim you lack
 access to an uploaded CV or ask the user to re-send CV details. When the
 original document is available, ground wording and section feedback in it;
 otherwise use only the structured CV fields and say when detail is missing.
-Treat any supplied score as authoritative and do not recalculate it. For a CV
-review, write a natural, directly helpful response tailored to the user's
+Treat any supplied score as authoritative and do not recalculate it. CV review
+overall_score values are stored on a 0-100 scale. When the user asks for a
+different presentation scale such as 1-5 or 1-10, convert the existing score
+arithmetically and answer from that conversion without re-running a review. For a
+CV review, write a natural, directly helpful response tailored to the user's
 request. Use the supplied review feedback as the only source for CV assessments
 and recommendations; do not invent or recalculate any finding. For a CV
 comparison, use `cv_comparison` and `cvs` as the only source for relative
@@ -2314,7 +2889,9 @@ for more CV details or focus areas when comparison results are already
 available. When `cv_review` is present and `cv_comparison` is not, answer from
 that review; never claim you lack access to an uploaded CV when `cv`, `cvs`,
 `cv_review`, `cv_comparison`, or a successful action tool result already
-contains profile data. Do not follow a fixed report layout. Mention a
+contains profile data. Prefer the most recent successful review_cv ToolMessage
+score when the state summary has no overall_score after a later general review.
+Do not follow a fixed report layout. Mention a
 numerical CV score only when one is supplied, and never mention that a score is
 absent. Do not expose implementation language such as validation, criteria,
 state, or internal field names. Mention when the scrape was truncated and how
@@ -2336,9 +2913,7 @@ def response_context(state: ConversationState) -> dict[str, Any]:
     if selected_cv is None and documents:
         selected_cv = documents[0]
     features: Any = (
-        selected_cv.get("cv_features")
-        if isinstance(selected_cv, dict)
-        else None
+        selected_cv.get("cv_features") if isinstance(selected_cv, dict) else None
     )
     if not isinstance(features, dict):
         features = {}
@@ -2356,7 +2931,7 @@ def response_context(state: ConversationState) -> dict[str, Any]:
         for doc in documents
     ]
     jobs: list[dict[str, Any]] = []
-    for item in jobs_state.get("results") or []:
+    for item in job_results_for_display(state):
         card: Any = item.get("job_card") if isinstance(item, dict) else None
         if not isinstance(card, dict):
             continue
@@ -2378,23 +2953,10 @@ def response_context(state: ConversationState) -> dict[str, Any]:
     for job in jobs:
         if job.get("description"):
             job["description"] = short_text(job["description"], 1200)
-    matches: list[dict[str, Any]] = [
-        {
-            "cv_id": item.get("cv_id"),
-            "cv_filename": item.get("cv_filename"),
-            "job_key": item.get("job_key"),
-            "title": item["job_card"].get("title"),
-            "company": item["job_card"].get("company"),
-            "url": item["job_card"].get("url"),
-            "normalized_score": item["score"].get("normalized_score"),
-            "decision": item["score"].get("decision"),
-            "review_reasons": (item["score"].get("review_reasons") or [])[:5],
-        }
-        for item in (jobs_state.get("matches") or [])
-        if isinstance(item, dict)
-        and isinstance(item.get("job_card"), dict)
-        and isinstance(item.get("score"), dict)
-    ]
+    match_assessment: dict[str, Any] = build_match_assessment(
+        [item for item in (jobs_state.get("matches") or []) if isinstance(item, dict)]
+    )
+    matches: list[dict[str, Any]] = match_assessment["matches"]
     cv_review: Any = cv_state.get("review")
     if not isinstance(cv_review, dict) and isinstance(selected_cv, dict):
         cv_review = selected_cv.get("cv_review")
@@ -2432,6 +2994,7 @@ def response_context(state: ConversationState) -> dict[str, Any]:
         "processed_job_count": len(jobs_state.get("results") or []),
         "jobs": jobs,
         "matches": matches,
+        "match_assessment": match_assessment,
         "cv_review": cv_review if isinstance(cv_review, dict) else None,
         "errors": (state.get("errors") or [])[-8:],
     }
@@ -2466,7 +3029,7 @@ def format_search_results(state: ConversationState) -> str | None:
 
     cards: list[dict[str, Any]] = [
         item.get("job_card")
-        for item in jobs_state.get("results") or []
+        for item in job_results_for_display(state)
         if isinstance(item, dict) and isinstance(item.get("job_card"), dict)
     ]
     if not cards:
@@ -2657,13 +3220,15 @@ def route_into_job_subagent(state: ConversationState) -> str:
         return "extract_pasted_job"
     if route == "search_jobs":
         return "scrape_jobs"
-    if route == "match_jobs" and not jobs_bucket(state).get("results"):
-        if selection.get("job_source") == "pasted":
-            return "extract_pasted_job"
-        if selection.get("job_source") == "search":
-            return "scrape_jobs"
-        return "end"
     if route == "match_jobs":
+        if selection.get("job_source") == "search":
+            if current_search_is_reusable(state) and resolve_selected_jobs(state):
+                return "match_jobs"
+            return "scrape_jobs"
+        if not jobs_bucket(state).get("results"):
+            if selection.get("job_source") == "pasted":
+                return "extract_pasted_job"
+            return "end"
         return "match_jobs"
     return "end"
 
@@ -2786,9 +3351,12 @@ def route_after_cv_subagent(state: ConversationState) -> str:
     if not has_text:
         return "respond"
     route: RouteName = router_bucket(state).get("route") or "respond"
+    actions: list[str] = completed_actions(state)
+    if route in {"review_cv", "compare_cvs"} and route in actions:
+        return "respond"
     if (
         route in {"respond", "extract_cv"}
-        and "extract_cv" in completed_actions(state)
+        and "extract_cv" in actions
         and not cvs_need_extraction(state)
     ):
         return "respond"
