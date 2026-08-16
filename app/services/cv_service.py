@@ -235,6 +235,42 @@ class CvService:
             finished_at=record.finished_at,
         )
 
+    async def load_latest_valid_thread_context(
+        self,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        """Load the persisted CV context that should be active for a chat thread."""
+        extraction = await self._repository.get_latest_valid_extraction_for_thread(
+            thread_id
+        )
+        if extraction is None:
+            return None
+
+        document = await self._repository.get_document(extraction.document_id)
+        cv_text = validate_extracted_text(document.extracted_text)
+        cv_result = _result_without_source_text(extraction.extraction_result)
+        matching_features = extraction.matching_features
+        if not isinstance(matching_features, dict) or not matching_features:
+            raise CvPersistenceError("Stored CV extraction has no matching features")
+
+        cv_result["matching_features"] = _json_safe(matching_features)
+        cv_result["validation_status"] = "valid"
+        return {
+            "cv": {
+                "documents": [
+                    {
+                        "id": str(extraction.document_id),
+                        "filename": str(document.filename or "cv.pdf"),
+                        "cv_text": cv_text,
+                        "cv_result": cv_result,
+                        "cv_features": _json_safe(matching_features),
+                        "cv_review": None,
+                    }
+                ],
+                "needs_extraction": False,
+            }
+        }
+
     async def _get_extracted_text(self, cv_id: UUID) -> str:
         document = await self._repository.get_document(cv_id)
         if document.extracted_text and document.extracted_text.strip():

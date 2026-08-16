@@ -35,7 +35,6 @@ if settings.langsmith_api_key:
     os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
 
 
-import re
 import uuid
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -43,6 +42,8 @@ from typing import Any, Literal, TypedDict
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field, model_validator
+
+from app.services.text_normalization import collapse_whitespace
 
 Seniority = Literal[
     "intern",
@@ -272,7 +273,7 @@ You may add suggested_preferences with confidence and evidence, but do not treat
 
 
 def normalize_skill_name(name: str) -> str:
-    key = re.sub(r"\s+", " ", name.strip().lower())
+    key = collapse_whitespace(name).lower()
     return SKILL_ALIASES.get(key, name.strip())
 
 
