@@ -697,11 +697,6 @@ class CvComparisonResult(BaseModel):
     recommendation: str = Field(min_length=1, max_length=800)
 
 
-class TableResponseCopy(BaseModel):
-    opener: str = Field(min_length=1, max_length=500)
-    next_step: str = Field(min_length=1, max_length=300)
-
-
 class ConversationMemory(BaseModel):
     """Durable conversational context; domain state remains authoritative."""
 
@@ -4166,7 +4161,23 @@ def format_search_results(state: ConversationState) -> str | None:
         if role
         else f"Sure — I found {len(cards)} job openings."
     )
-    lines: list[str] = [opener, "", match_presentation.render_search_table(cards)]
+    lines: list[str] = [opener, ""]
+    for index, card in enumerate(cards, start=1):
+        title: str = str(card.get("title") or "Untitled role").strip()
+        company: str = str(card.get("company") or "").strip()
+        location: str = str(card.get("location") or "").strip()
+        salary: str = str(card.get("salary") or "").strip()
+        heading: str = f"{title} at {company}" if company else title
+        details: list[str] = [heading]
+        if location:
+            details.append(location)
+        if salary:
+            details.append(salary)
+        lines.append(f"{index}. " + " — ".join(details))
+        if card.get("url"):
+            lines.append(f"   Link: {card['url']}")
+        if index < len(cards):
+            lines.append("")
     if jobs_bucket(state).get("scrape_truncated"):
         lines.extend(["", "There may be more openings available."])
     lines.extend(
@@ -4216,16 +4227,51 @@ def format_assessed_jobs(state: ConversationState) -> str | None:
         dict(assessment.get("counts") or {}),
         len(matches),
     )
-    table: str = match_presentation.render_match_table(
-        assessment,
-        show_score=bool(selection_bucket(state).get("show_score")),
-    )
+    show_score: bool = bool(selection_bucket(state).get("show_score"))
+    detail_level: str = str(assessment.get("detail_level") or "summary")
+    lines: list[str] = [opener, ""]
+    for index, match in enumerate(matches, start=1):
+        title: str = str(match.get("title") or "Untitled role").strip()
+        company: str = str(match.get("company") or "").strip()
+        assessment_label: str = str(
+            match.get("assessment") or "Assessment unavailable"
+        ).strip()
+        heading: str = f"{title} at {company}" if company else title
+        lines.append(f"{index}. {heading} — {assessment_label}.")
+        why: str = str(match.get("why") or "").strip()
+        if why:
+            lines.append(f"   Why: {why}")
+        if detail_level == "full":
+            strengths: str = "; ".join(
+                str(item).strip() for item in (match.get("strengths") or []) if item
+            )
+            gaps: str = "; ".join(
+                str(item).strip() for item in (match.get("gaps") or []) if item
+            )
+            unknowns: str = "; ".join(
+                str(item).strip()
+                for item in (match.get("unknowns") or [])
+                if item
+            )
+            if strengths:
+                lines.append(f"   Strengths: {strengths}")
+            if gaps:
+                lines.append(f"   Gaps: {gaps}")
+            if unknowns:
+                lines.append(f"   Missing information: {unknowns}")
+        if show_score and match.get("score") is not None:
+            lines.append(f"   Score: {match['score']}/100.")
+        if match.get("url"):
+            lines.append(f"   Link: {match['url']}")
+        if index < len(matches):
+            lines.append("")
     next_step: str = (
         "Want help prioritizing these roles or deciding whether to apply?"
         if assessment.get("detail_level") == "full"
         else "Want the full strengths and gaps for all roles or one job?"
     )
-    return "\n\n".join((opener, table, next_step))
+    lines.extend(["", next_step])
+    return "\n".join(lines)
 
 
 def format_review_results(state: ConversationState) -> str | None:
@@ -4314,22 +4360,6 @@ def is_usable_model_response(response: str) -> bool:
     return normalized not in {"", "none", "null", "n/a", "na"}
 
 
-TABLE_COPY_PROMPT: str = """You write two short sentences for a career assistant.
-
-The application will place a job table between them.
-
-For opener, directly summarize the supplied count data in natural plain English.
-For next_step, ask one useful follow-up. For match results, offer full strengths
-and gaps for all roles or one named job when detail_level is summary. When
-detail_level is full, offer help prioritizing or deciding whether to apply. For
-search results, offer CV comparison or a narrower search.
-
-Do not list jobs, write a table, repeat links, mention scores unless show_score is
-true, or use internal terms such as state, coverage, dimensions, fields, matcher,
-validation, or tools. Use only the supplied data.
-"""
-
-
 CHAT_PROMPT: str = (
     """You are a concise CV and job-search assistant.
 
@@ -4340,6 +4370,9 @@ and a next step when one is clear.
 Use only the presentation data. Never invent jobs, employers, URLs, CV facts,
 scores, or recommendations. Never mention internal systems, state, validation,
 coverage, fingerprints, tools, or field names.
+
+Never format job or match results as a table. Use plain paragraphs or an ordered
+list instead.
 
 For a job search, start like "Sure — I found N <role> openings." Then list
 every job in the presentation data, in that order. Do not rank, omit, or add
@@ -4359,54 +4392,6 @@ review, comparison, job search, and job-to-CV fit.
     + "\n\n"
     + DEFAULT_USER_RESPONSE_STYLE
 )
-
-
-def table_copy_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    assessment: Any = payload.get("assessment")
-    counts: dict[str, Any] = (
-        dict(assessment.get("counts") or {}) if isinstance(assessment, dict) else {}
-    )
-    return {
-        "action": payload.get("action"),
-        "intent": payload.get("intent"),
-        "role": payload.get("role"),
-        "job_count": payload.get("job_count"),
-        "counts": counts,
-        "show_score": bool(payload.get("show_score")),
-        "detail_level": assessment.get("detail_level")
-        if isinstance(assessment, dict)
-        else None,
-    }
-
-
-def presentation_table(payload: dict[str, Any]) -> str | None:
-    action: Any = payload.get("action")
-    intent: Any = payload.get("intent")
-    if action == "match_jobs" or intent in {
-        "discover_and_assess",
-        "explain_match",
-        "show_score",
-    }:
-        assessment: Any = payload.get("assessment")
-        if not isinstance(assessment, dict) or not assessment.get("matches"):
-            return None
-        return match_presentation.render_match_table(
-            assessment,
-            show_score=bool(payload.get("show_score")),
-        )
-    if action == "search_jobs" or intent == "search_only":
-        jobs: list[dict[str, Any]] = [
-            item for item in (payload.get("jobs") or []) if isinstance(item, dict)
-        ]
-        return match_presentation.render_search_table(jobs) if jobs else None
-    return None
-
-
-def compose_table_response(
-    copy: TableResponseCopy,
-    table: str,
-) -> str:
-    return "\n\n".join((copy.opener.strip(), table, copy.next_step.strip()))
 
 
 def response_context(state: ConversationState) -> dict[str, Any]:
@@ -4557,27 +4542,7 @@ async def respond_node(
 
     payload: dict[str, Any] = presentation_payload(state)
     selected_model: ChatModel = chat_model or ChatModel.from_env()
-    table: str | None = presentation_table(payload)
     try:
-        if table is not None:
-            copy_writer: Any = selected_model.structured(TableResponseCopy)
-            copy: TableResponseCopy = await copy_writer.ainvoke(
-                [
-                    SystemMessage(content=TABLE_COPY_PROMPT),
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            table_copy_payload(payload),
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-                config=config,
-            )
-            response: str = compose_table_response(copy, table)
-            result: AIMessage = AIMessage(content=response)
-            return {"messages": [result], "response": response}
-
         assistant: Any = selected_model.response()
         response_parts: list[str] = []
         async for chunk in assistant.astream(
