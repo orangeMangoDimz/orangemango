@@ -9,11 +9,10 @@ review.
 """
 
 import json
-import re
-import unicodedata
 from typing import Any, Literal, TypedDict
 
 from app.models.chat_model import ChatModel
+from app.services.text_normalization import casefolded_text, count_numeric_measures
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
@@ -43,11 +42,23 @@ CRITERION_LABELS = {name: label for name, label, _ in CRITERIA}
 CRITERION_NAMES = tuple(name for name, _, _ in CRITERIA)
 MIN_SCORED_CRITERIA = 4
 
-METRIC_PATTERN = re.compile(
-    r"(?<!\w)(?:[$€£]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*"
-    r"(?:%|x|years?|months?|users?|customers?|requests?|projects?|team members?"
-    r"|million|thousand|k|m))\b",
-    re.IGNORECASE,
+METRIC_UNITS: tuple[str, ...] = (
+    "year",
+    "years",
+    "month",
+    "months",
+    "user",
+    "users",
+    "customer",
+    "customers",
+    "request",
+    "requests",
+    "project",
+    "projects",
+    "team member",
+    "team members",
+    "million",
+    "thousand",
 )
 
 
@@ -134,11 +145,7 @@ text-only review.
 
 
 def _normalized_text(value: str) -> str:
-    return re.sub(
-        r"\s+",
-        " ",
-        unicodedata.normalize("NFKC", value).casefold(),
-    ).strip()
+    return casefolded_text(value)
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -157,13 +164,11 @@ def _signals(
     target_role: str | None,
     review_mode: ReviewMode,
 ) -> dict[str, Any]:
-    metrics = {
-        match.group(0).strip()
-        for match in METRIC_PATTERN.finditer(cv_text)
-        if match.group(0).strip()
-    }
     return {
-        "quantified_result_count": len(metrics),
+        "quantified_result_count": count_numeric_measures(
+            cv_text,
+            units=METRIC_UNITS,
+        ),
         "target_role_provided": bool(target_role),
         "review_mode": review_mode,
     }

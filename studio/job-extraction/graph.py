@@ -37,12 +37,13 @@ if settings.langsmith_api_key:
 
 import hashlib
 import json
-import re
 from typing import Any, Literal, TypedDict
 
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field, model_validator
+
+from app.services.text_normalization import collapse_whitespace, url_path_value_after
 
 Seniority = Literal[
     "intern",
@@ -359,7 +360,7 @@ Add a hard requirement only when failure to meet it would likely make the candid
 
 
 def normalize_skill_name(name: str) -> str:
-    key = re.sub(r"\s+", " ", name.strip().lower())
+    key = collapse_whitespace(name).lower()
     return SKILL_ALIASES.get(key, name.strip())
 
 
@@ -452,12 +453,8 @@ def content_hash(payload: dict[str, Any]) -> str:
 
 
 def source_job_id_from_url(url: str | None) -> str | None:
-    if not url:
-        return None
-    match = re.search(r"/job/(\d+)", url)
-    if match:
-        return match.group(1)
-    return None
+    value: str | None = url_path_value_after(url, "job")
+    return value if value and value.isdigit() else None
 
 
 def extract_node(state: JobState) -> dict[str, Any]:

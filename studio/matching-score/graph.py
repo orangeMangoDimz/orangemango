@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-
-import re
-
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+
+from app.services.text_normalization import (
+    collapse_whitespace,
+    contains_token_sequence,
+    normalized_tokens,
+    rewrite_token_sequences,
+    split_on_tokens,
+)
 
 
 WEIGHTS = {
@@ -23,6 +28,13 @@ WEIGHTS = {
 CONFIRMED_MATCH_SCORE: float = 80.0
 MIN_SCORE_COVERAGE: float = 0.70
 FitVerdict = Literal["yes", "no", "uncertain"]
+FitReasonCode = Literal[
+    "INSUFFICIENT_COVERAGE",
+    "NO_NORMALIZED_SCORE",
+    "CONFIRMED_MATCH",
+    "CONFIRMED_NON_MATCH",
+    "ASSESSMENT_UNAVAILABLE",
+]
 
 
 SKILL_ALIASES = {
@@ -103,14 +115,47 @@ SENIORITY_ORDER = [
 ]
 
 
-OR_SPLIT = re.compile(r"\s+(?:or|atau)\s+", re.IGNORECASE)
+ROLE_FAMILY_ALIASES: dict[tuple[str, ...], str] = {
+    ("back", "end"): "backend",
+    ("backend",): "backend",
+    ("front", "end"): "frontend",
+    ("frontend",): "frontend",
+    ("full", "stack"): "fullstack",
+    ("fullstack",): "fullstack",
+}
+ROLE_FUNCTION_ALIASES: dict[tuple[str, ...], str] = {
+    ("developer",): "engineer",
+    ("development",): "engineer",
+    ("engineer",): "engineer",
+    ("engineering",): "engineer",
+}
+ROLE_FAMILIES: frozenset[str] = frozenset(ROLE_FAMILY_ALIASES.values())
+ROLE_ALIAS_TOKENS: frozenset[str] = frozenset(
+    {
+        *ROLE_FAMILIES,
+        "developer",
+        "development",
+        "engineer",
+        "engineering",
+        "software",
+        "web",
+        "intern",
+        "internship",
+        "entry",
+        "junior",
+        "mid",
+        "senior",
+        "lead",
+        "principal",
+        "staff",
+    }
+)
 
 UNKNOWN_VALUES = {None, "", "unknown", "unspecified"}
 
 
 def normalize_skill_name(name: str) -> str:
-
-    key = re.sub(r"\s+", " ", name.strip().lower())
+    key = collapse_whitespace(name).lower()
 
     return SKILL_ALIASES.get(key, name.strip())
 
@@ -118,6 +163,37 @@ def normalize_skill_name(name: str) -> str:
 def normalize_skill_set(names: list[str]) -> set[str]:
 
     return {normalize_skill_name(n) for n in names if n and str(n).strip()}
+
+
+def normalize_role_name(name: str) -> str:
+    family_tokens: tuple[str, ...] = rewrite_token_sequences(
+        normalized_tokens(name),
+        ROLE_FAMILY_ALIASES,
+    )
+    if not set(family_tokens).issubset(ROLE_ALIAS_TOKENS):
+        return " ".join(family_tokens)
+    return " ".join(rewrite_token_sequences(family_tokens, ROLE_FUNCTION_ALIASES))
+
+
+def role_names_overlap(first: str, second: str) -> bool:
+
+    first_tokens: set[str] = set(first.split())
+    second_tokens: set[str] = set(second.split())
+
+    if first_tokens == second_tokens:
+        return True
+
+    if first_tokens.issubset(second_tokens):
+        smaller, larger = first_tokens, second_tokens
+    elif second_tokens.issubset(first_tokens):
+        smaller, larger = second_tokens, first_tokens
+    else:
+        return False
+
+    if len(smaller) == 1 and not smaller & ROLE_FAMILIES:
+        return False
+
+    return (larger - smaller).issubset(ROLE_ALIAS_TOKENS)
 
 
 def is_unknown(value: Any) -> bool:
@@ -172,7 +248,7 @@ def skill_requirement_detail(
 
     canonical_user_skills = canonical_skill_set(user_skills)
 
-    alternatives = [p.strip() for p in OR_SPLIT.split(raw) if p.strip()]
+    alternatives = split_on_tokens(raw, {"or", "atau"})
 
     if len(alternatives) > 1:
         alternative_details = [
@@ -206,7 +282,7 @@ def skill_requirement_detail(
 
         return make_match_detail("mismatched", 0.0)
 
-    key = re.sub(r"\s+", " ", raw.casefold())
+    key = collapse_whitespace(raw).casefold()
 
     composite = SKILL_REQUIREMENT_TERMS.get(key)
 
@@ -377,7 +453,11 @@ def role_match_detail(cv_roles: list[str], job_roles: list[str]) -> dict[str, An
             "not_specified", None, reason="no role requirements provided"
         )
 
-    cv_norm = {str(role).casefold() for role in cv_roles if role}
+    cv_norm = {
+        normalize_role_name(str(role)): str(role)
+        for role in cv_roles
+        if str(role).strip()
+    }
 
     if not cv_norm:
         return make_match_detail("unknown", None, reason="candidate roles are missing")
@@ -387,13 +467,13 @@ def role_match_detail(cv_roles: list[str], job_roles: list[str]) -> dict[str, An
     hits = 0
 
     for role in job_roles:
-        job_key = str(role).casefold()
+        job_key = normalize_role_name(str(role))
 
         matched_role = next(
             (
-                candidate
-                for candidate in cv_norm
-                if job_key in candidate or candidate in job_key
+                original
+                for candidate, original in cv_norm.items()
+                if role_names_overlap(job_key, candidate)
             ),
             None,
         )
@@ -560,7 +640,8 @@ def location_ratio(cv_features: dict[str, Any], job_features: dict[str, Any]) ->
     if not candidates:
         return 0.0
 
-    blob = " ".join(candidates).casefold()
+    blob = " ".join(candidates)
+    candidate_tokens: set[str] = set(normalized_tokens(blob))
 
     checks = [x for x in (city, region, country) if not is_unknown(x)]
 
@@ -568,15 +649,13 @@ def location_ratio(cv_features: dict[str, Any], job_features: dict[str, Any]) ->
         return 1.0
 
     def part_hits(part: str) -> bool:
-
-        text = str(part).casefold()
-
-        if text in blob:
+        text = str(part)
+        if contains_token_sequence(blob, text):
             return True
 
-        tokens = [t for t in re.split(r"[\s,]+", text) if len(t) > 2]
+        tokens = [token for token in normalized_tokens(text) if len(token) > 2]
 
-        return any(token in blob for token in tokens)
+        return any(token in candidate_tokens for token in tokens)
 
     hits = sum(1 for part in checks if part_hits(part))
 
@@ -808,36 +887,52 @@ def score_match(
 
     eligibility_constraints = list(job.get("eligibility_constraints") or [])
 
-    review_reasons = [
-        f"{dimension['dimension']}: {dimension['status']}"
+    review_reason_codes: list[dict[str, str]] = [
+        {
+            "code": "DIMENSION_UNCERTAIN",
+            "field": str(dimension["dimension"]),
+        }
         for dimension in dimensions
         if dimension["dimension"] != "location"
         and dimension["status"] in {"unknown", "ambiguous"}
     ]
 
-    review_reasons.extend(
-        f"candidate ambiguous field: {field}" for field in candidate_ambiguous
+    review_reason_codes.extend(
+        {"code": "CANDIDATE_FIELD_AMBIGUOUS", "field": str(field)}
+        for field in candidate_ambiguous
     )
 
-    review_reasons.extend(f"job ambiguous field: {field}" for field in job_ambiguous)
+    review_reason_codes.extend(
+        {"code": "JOB_FIELD_AMBIGUOUS", "field": str(field)} for field in job_ambiguous
+    )
 
     if hard_requirements:
-        review_reasons.append("unsupported hard requirements")
+        review_reason_codes.append(
+            {"code": "HARD_REQUIREMENTS_UNSUPPORTED", "field": "hard_requirements"}
+        )
 
     if eligibility_constraints:
-        review_reasons.append("unsupported eligibility constraints")
+        review_reason_codes.append(
+            {
+                "code": "ELIGIBILITY_CONSTRAINTS_UNSUPPORTED",
+                "field": "eligibility_constraints",
+            }
+        )
 
-    review_reasons.extend(
-        f"confirmation required: {field}" for field in confirmation_required
+    review_reason_codes.extend(
+        {"code": "CONFIRMATION_REQUIRED", "field": str(field)}
+        for field in confirmation_required
     )
 
-    review_reasons.extend(f"warning: {warning}" for warning in warnings)
+    review_reason_codes.extend(
+        {"code": "EXTRACTION_WARNING", "field": str(warning)} for warning in warnings
+    )
 
-    decision = "needs_review" if review_reasons else "ready"
+    decision = "needs_review" if review_reason_codes else "ready"
 
     normalized_score = (total / applicable_weight * 100) if applicable_weight else None
     score_coverage = round(applicable_weight / sum(WEIGHTS.values()), 4)
-    fit_verdict, verdict_reason = classify_fit_verdict(
+    fit_verdict, verdict_reason_code = classify_fit_verdict(
         normalized_score=normalized_score,
         score_coverage=score_coverage,
         decision=decision,
@@ -853,8 +948,8 @@ def score_match(
         "score_coverage": score_coverage,
         "decision": decision,
         "fit_verdict": fit_verdict,
-        "verdict_reason": verdict_reason,
-        "review_reasons": review_reasons,
+        "verdict_reason_code": verdict_reason_code,
+        "review_reason_codes": review_reason_codes,
         "dimensions": dimensions,
         "skills": {
             "user_skills": sorted(user_skills),
@@ -880,28 +975,15 @@ def classify_fit_verdict(
     normalized_score: float | None,
     score_coverage: float | None,
     decision: str | None,
-) -> tuple[FitVerdict, str]:
+) -> tuple[FitVerdict, FitReasonCode]:
     coverage = float(score_coverage or 0.0)
     if decision != "ready" or coverage < MIN_SCORE_COVERAGE:
-        return (
-            "uncertain",
-            "Insufficient evidence: score coverage is below the confirmation threshold "
-            "or the match still needs review.",
-        )
+        return "uncertain", "INSUFFICIENT_COVERAGE"
     if normalized_score is None:
-        return (
-            "uncertain",
-            "Insufficient evidence: no normalized score is available.",
-        )
+        return "uncertain", "NO_NORMALIZED_SCORE"
     if float(normalized_score) >= CONFIRMED_MATCH_SCORE:
-        return (
-            "yes",
-            "Confirmed match: score is at least 80 with sufficient coverage.",
-        )
-    return (
-        "no",
-        "Confirmed non-match: score is below 80 with sufficient coverage.",
-    )
+        return "yes", "CONFIRMED_MATCH"
+    return "no", "CONFIRMED_NON_MATCH"
 
 
 class MatchingState(TypedDict, total=False):

@@ -1,5 +1,3 @@
-exclude: ^\.gitignore$
-
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -24,6 +22,11 @@ repos:
 
   - repo: local
     hooks:
+      - id: no-regex
+        name: Reject regular-expression usage
+        entry: uv run python scripts/check_no_regex.py
+        language: system
+        types: [python]
       - id: compile-python
         name: Compile Python sources
         entry: uv run python -m compileall -q app main.py studio
