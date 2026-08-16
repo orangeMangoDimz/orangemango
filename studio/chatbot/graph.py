@@ -479,6 +479,18 @@ JobSemanticIntent = Literal[
     "cancel_current_goal",
 ]
 JobTargetScope = Literal["none", "one", "all"]
+CvTargetScope = Literal["none", "one", "all"]
+GoalName = Literal[
+    "review_cv",
+    "compare_cvs",
+    "search_jobs",
+    "assess_cvs_against_jobs",
+    "recommend_existing_match",
+    "explain_existing_match",
+    "general_question",
+    "extract_cv",
+    "extract_job",
+]
 
 AGENT_ACTIONS: frozenset[str] = frozenset(
     {
@@ -520,6 +532,7 @@ PUBLIC_PRESENTATION_INTENTS: frozenset[str] = frozenset(
         "explain_match",
         "recommend_match",
         "clarify_match_detail",
+        "clarify_cv_target",
         "show_score",
         "clarify_job_goal",
         "cancel_job_goal",
@@ -535,6 +548,9 @@ CLARIFY_JOB_GOAL_MESSAGE: str = (
 )
 CLARIFY_MATCH_DETAIL_MESSAGE: str = (
     "Which job should I explain? Name the job, use its row number, or ask for all."
+)
+CLARIFY_CV_TARGET_MESSAGE: str = (
+    "Which CV should I use? Name the filename or specify the CV number."
 )
 CANCEL_JOB_GOAL_MESSAGE: str = "Okay, I'll stop that job search."
 GENERIC_FAILURE_MESSAGE: str = (
@@ -681,6 +697,47 @@ class RouteDecision(BaseModel):
         ),
     )
     scrape_request: ScrapeRequest = Field(default_factory=ScrapeRequest)
+
+
+class GoalDecision(BaseModel):
+    """Stage 1 output: user intent without workflow or readiness decisions."""
+
+    goal: GoalName
+    reason: str = Field(min_length=1, max_length=300)
+    decision_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    job_intent: JobSemanticIntent = "none"
+    job_source: JobSource = "none"
+    score_requested: bool = False
+    assessment_requested: bool = False
+    role_constraints: list[str] = Field(default_factory=list, max_length=5)
+    role_evidence: str | None = Field(default=None, max_length=300)
+    review_target_role: str | None = Field(default=None, max_length=160)
+    review_mode: ReviewMode = "general"
+    review_focus: str | None = Field(default=None, max_length=200)
+    review_mode_reason: str | None = Field(default=None, max_length=300)
+    needs_cv_text: bool = False
+    needs_cv_features: bool = False
+    is_follow_up: bool = False
+    scrape_request: ScrapeRequest = Field(default_factory=ScrapeRequest)
+
+
+class TargetResolution(BaseModel):
+    """Stage 2 output: explicit references resolved against supplied catalogs."""
+
+    cv_target_scope: CvTargetScope = "none"
+    selected_cv_ids: list[str] = Field(default_factory=list, max_length=MAX_CV_DOCUMENTS)
+    job_target_scope: JobTargetScope = "none"
+    selected_job_keys: list[str] | None = Field(default=None, max_length=20)
+    unresolved_references: list[str] = Field(default_factory=list, max_length=8)
+    ambiguous: bool = False
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class WorkflowPlan(BaseModel):
+    """Stage 3 output: exactly one next workflow action."""
+
+    action: RouteName
+    reason: str = Field(min_length=1, max_length=300)
 
 
 class CvComparisonCandidate(BaseModel):
@@ -1297,6 +1354,17 @@ def resolve_selected_cvs(state: ConversationState) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = extracted_cv_documents(state)
     if not documents:
         return []
+    selected_ids: Any = selection_bucket(state).get("selected_cv_ids")
+    if isinstance(selected_ids, list) and selected_ids:
+        wanted: set[str] = {
+            str(item).strip() for item in selected_ids if str(item).strip()
+        }
+        selected: list[dict[str, Any]] = [
+            document
+            for document in documents
+            if str(document.get("id") or "") in wanted
+        ]
+        return selected or documents
     selected_id: str = str(selection_bucket(state).get("selected_cv_id") or "").strip()
     if not selected_id:
         return documents
@@ -1377,8 +1445,14 @@ def default_selection_fields() -> dict[str, Any]:
         "review_mode": "general",
         "review_focus": None,
         "review_mode_reason": None,
+        "cv_target_scope": "none",
+        "selected_cv_ids": [],
         "selected_cv_id": None,
+        "job_target_scope": "none",
         "selected_job_keys": None,
+        "unresolved_references": [],
+        "targets_ambiguous": False,
+        "stage2_complete": False,
     }
 
 
@@ -2897,6 +2971,8 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
             "completed_actions": [],
             "needs_cv_text": False,
             "needs_cv_features": False,
+            "stage1_complete": False,
+            "stage3_complete": False,
         },
         "selection": default_selection_fields(),
         "response": None,
@@ -4132,6 +4208,8 @@ def recovery_response(state: ConversationState) -> str | None:
         return CLARIFY_JOB_GOAL_MESSAGE
     if intent == "clarify_match_detail":
         return CLARIFY_MATCH_DETAIL_MESSAGE
+    if intent == "clarify_cv_target":
+        return CLARIFY_CV_TARGET_MESSAGE
     if intent == "cancel_job_goal":
         return CANCEL_JOB_GOAL_MESSAGE
     documents: list[dict[str, Any]] = state_cv_documents(state)
