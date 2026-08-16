@@ -5484,8 +5484,19 @@ def route_after_router(state: ConversationState) -> str:
     return "respond"
 
 
+def route_after_plan_validation(state: ConversationState) -> str:
+    route: Any = router_bucket(state).get("route") or "respond"
+    if route in AGENT_ACTIONS or route == "respond":
+        return str(route)
+    return "respond"
+
+
 def route_after_agent_action(state: ConversationState) -> str:
-    return "respond" if len(completed_actions(state)) >= MAX_AGENT_ACTIONS else "router"
+    return (
+        "respond"
+        if len(completed_actions(state)) >= MAX_AGENT_ACTIONS
+        else "workflow_planner"
+    )
 
 
 def route_after_cv_subagent(state: ConversationState) -> str:
@@ -5493,25 +5504,11 @@ def route_after_cv_subagent(state: ConversationState) -> str:
     has_text: bool = any((doc.get("cv_text") or "").strip() for doc in documents)
     if not has_text:
         return "respond"
-    route: RouteName = router_bucket(state).get("route") or "respond"
-    actions: list[str] = completed_actions(state)
-    if route in {"review_cv", "compare_cvs"} and route in actions:
-        return "respond"
-    if route == "match_jobs" and "extract_cv" in actions:
-        if not cvs_need_extraction(state) and bool(resolve_selected_cvs(state)):
-            return "job_subagent"
-        return "respond"
-    if (
-        route in {"respond", "extract_cv"}
-        and "extract_cv" in actions
-        and not cvs_need_extraction(state)
-    ):
-        return "respond"
     return route_after_agent_action(state)
 
 
 def route_after_job_subagent(state: ConversationState) -> str:
-    return "respond"
+    return route_after_agent_action(state)
 
 
 def build_graph(
@@ -5521,8 +5518,14 @@ def build_graph(
 ) -> Any:
     selected_model: ChatModel = chat_model or ChatModel.from_env()
 
-    async def router_node(state: ConversationState) -> dict[str, Any]:
-        return await route_message(state, selected_model)
+    async def goal_router(state: ConversationState) -> dict[str, Any]:
+        return await goal_router_node(state, selected_model)
+
+    async def target_resolver(state: ConversationState) -> dict[str, Any]:
+        return await target_resolver_node(state, selected_model)
+
+    async def workflow_planner(state: ConversationState) -> dict[str, Any]:
+        return await workflow_planner_node(state, selected_model)
 
     async def response_node(
         state: ConversationState,
@@ -5536,17 +5539,23 @@ def build_graph(
     builder: StateGraph = StateGraph(ConversationState, input_schema=StudioInput)
     builder.add_node("ingest_input", ingest_input)
     builder.add_node("summarize_conversation", summarize_node)
-    builder.add_node("router", router_node)
+    builder.add_node("goal_router", goal_router)
+    builder.add_node("target_resolver", target_resolver)
+    builder.add_node("workflow_planner", workflow_planner)
+    builder.add_node("validate_plan", validate_plan_node)
     builder.add_node("cv_subagent", build_cv_subagent_graph(selected_model))
     builder.add_node("job_subagent", build_job_subagent_graph())
     builder.add_node("respond", response_node)
 
     builder.add_edge(START, "ingest_input")
     builder.add_edge("ingest_input", "summarize_conversation")
-    builder.add_edge("summarize_conversation", "router")
+    builder.add_edge("summarize_conversation", "goal_router")
+    builder.add_edge("goal_router", "target_resolver")
+    builder.add_edge("target_resolver", "workflow_planner")
+    builder.add_edge("workflow_planner", "validate_plan")
     builder.add_conditional_edges(
-        "router",
-        route_after_router,
+        "validate_plan",
+        route_after_plan_validation,
         {
             "extract_cv": "cv_subagent",
             "review_cv": "cv_subagent",
@@ -5561,8 +5570,7 @@ def build_graph(
         "cv_subagent",
         route_after_cv_subagent,
         {
-            "router": "router",
-            "job_subagent": "job_subagent",
+            "workflow_planner": "workflow_planner",
             "respond": "respond",
         },
     )
@@ -5570,7 +5578,7 @@ def build_graph(
         "job_subagent",
         route_after_job_subagent,
         {
-            "router": "router",
+            "workflow_planner": "workflow_planner",
             "respond": "respond",
         },
     )
