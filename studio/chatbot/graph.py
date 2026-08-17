@@ -2211,6 +2211,7 @@ def apply_job_request_policy(
             "refresh_requested": False,
             "match_detail_level": "summary",
             "selected_job_keys": None,
+            "role_candidates": role_candidates,
         }
         return finish("respond", reason, clarified)
 
@@ -2283,6 +2284,26 @@ def apply_job_request_policy(
         if infer_existing_job_assessment
         else decision.job_intent
     )
+    if intent in {"new_job_search", "search_and_assess"} and (
+        decision.role_source == "cv_inferred"
+    ):
+        strong_candidates: list[dict[str, Any]] = [
+            item
+            for item in role_candidates
+            if float(item.get("confidence") or 0.0) >= MIN_JOB_INTENT_CONFIDENCE
+        ]
+        if len(strong_candidates) > 1:
+            return clarify(
+                "Your CV matches several role types. Choose one before I search.",
+            )
+        if not normalized_role_constraints and len(strong_candidates) == 1:
+            normalized_role_constraints = [strong_candidates[0]["role"]]
+            role_evidence = str(strong_candidates[0]["evidence"])
+            has_new_goal_data = True
+        elif len(normalized_role_constraints) > 1:
+            return clarify(
+                "Your CV produced several role types. Choose one before I search.",
+            )
     current_goal_constraints: list[str] = normalize_role_constraints(
         (current_goal or {}).get("role_constraints")
     )
@@ -2458,13 +2479,23 @@ def apply_job_request_policy(
             and not bool(decision.assessment_requested)
             and not explicit_new_goal_assessment
         )
-        if not constraints or not evidence or evidence not in latest or contradictory:
+        requires_latest_evidence: bool = decision.role_source != "cv_inferred"
+        if (
+            not constraints
+            or not evidence
+            or (requires_latest_evidence and evidence not in latest)
+            or contradictory
+        ):
             return clarify(
                 "A new job goal needs explicit role evidence and a consistent intent."
             )
         jobs_update["pending_match"] = None
         new_goal: dict[str, Any] = build_active_job_goal(
-            source="explicit_search",
+            source=(
+                "cv_derived"
+                if decision.role_source == "cv_inferred"
+                else "explicit_search"
+            ),
             role_constraints=constraints,
             cv_id=str(document["id"]) if document else None,
             cv_version=cv_version(document) if document else None,
@@ -2475,6 +2506,12 @@ def apply_job_request_policy(
         request["keywords"] = display_role_constraints(new_goal["role_constraints"])
         jobs_update["scrape_request"] = request
         show_score = assessment_requested and bool(decision.score_requested)
+        selection = {
+            **selection,
+            "role_constraints": constraints,
+            "role_evidence": evidence,
+            "role_source": decision.role_source,
+        }
         planned: dict[str, Any] = {
             **selection,
             "job_source": "search",
@@ -3342,6 +3379,8 @@ Choose only the next missing step:
 - review with extracted target CV -> review_cv
 - comparison with at least two extracted target CVs -> compare_cvs
 - pasted job not extracted -> extract_job
+- one explicit or high-confidence CV-derived role for a new search -> search_jobs
+- multiple high-confidence CV-derived roles without a selected role -> respond
 - new or refreshed search not yet performed -> search_jobs
 - existing jobs ready for CV assessment and no current match -> match_jobs
 - satisfied follow-up, recommendation, explanation, ambiguity, or missing data
@@ -3460,11 +3499,13 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
                 "review_focus",
                 "needs_cv_features",
                 "is_follow_up",
+                "role_source",
+                "role_candidates",
             )
-            if router.get(key) is not None
+            if request.get(key) is not None
         },
         "targets": {
-            key: selection.get(key)
+            key: targets.get(key)
             for key in (
                 "cv_target_scope",
                 "selected_cv_ids",
@@ -3484,6 +3525,7 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
             "valid_match_keys": sorted(catalogs["match_keys"]),
             "job_count": len(catalogs["jobs"]),
             "match_count": len(catalogs["matches"]),
+            "cv_profiles": routing_cv_profiles(state),
             "active_job_goal": active_job_goal(state),
             "pending_match": pending_match_request(state),
             "completed_actions": completed_actions(state),
@@ -4458,6 +4500,24 @@ def public_presentation_intent(state: ConversationState) -> str:
     return "none"
 
 
+def clarify_job_goal_message(state: ConversationState) -> str:
+    candidates: list[dict[str, Any]] = normalize_role_candidates(
+        selection_bucket(state).get("role_candidates")
+    )
+    roles: list[str] = [
+        str(item.get("role") or "").title()
+        for item in candidates
+        if str(item.get("role") or "").strip()
+    ]
+    if roles:
+        return (
+            "Based on your CV, you appear to match "
+            + ", ".join(roles)
+            + ". Which role should I search for?"
+        )
+    return CLARIFY_JOB_GOAL_MESSAGE
+
+
 def search_role_label(state: ConversationState) -> str:
     goal: dict[str, Any] | None = active_job_goal(state)
     if goal is None:
@@ -4675,7 +4735,7 @@ def recovery_response(state: ConversationState) -> str | None:
         return UPLOAD_FAILED_MESSAGE
     intent: str = public_presentation_intent(state)
     if intent == "clarify_job_goal":
-        return CLARIFY_JOB_GOAL_MESSAGE
+        return clarify_job_goal_message(state)
     if intent == "clarify_match_detail":
         return CLARIFY_MATCH_DETAIL_MESSAGE
     if intent == "clarify_cv_target":
