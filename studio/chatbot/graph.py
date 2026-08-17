@@ -466,6 +466,7 @@ AgentAction = Literal[
     "match_jobs",
 ]
 JobSource = Literal["none", "existing", "search", "pasted"]
+RoleSource = Literal["none", "explicit", "active_goal", "cv_inferred"]
 ReviewMode = Literal["general", "scored", "focused"]
 JobSemanticIntent = Literal[
     "none",
@@ -608,9 +609,22 @@ class RouteDecision(BaseModel):
         default=None,
         max_length=300,
         description=(
-            "An exact contiguous quote from the latest message that supports all "
-            "new role constraints, or null when no new search goal is requested."
+            "Evidence supporting the selected role constraints. For explicit roles "
+            "this is a quote from the latest message; for CV-derived roles this "
+            "describes the structured CV profile evidence."
         ),
+    )
+    role_source: RoleSource = Field(
+        default="none",
+        description=(
+            "Whether the role came from the latest message, an active goal, or "
+            "inference from an extracted CV profile."
+        ),
+    )
+    role_candidates: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Candidate roles inferred from the structured CV profile.",
     )
     job_target_scope: JobTargetScope = Field(
         default="none",
@@ -699,8 +713,14 @@ class RouteDecision(BaseModel):
     scrape_request: ScrapeRequest = Field(default_factory=ScrapeRequest)
 
 
-class GoalDecision(BaseModel):
-    """Stage 1 output: user intent without workflow or readiness decisions."""
+class RoleCandidate(BaseModel):
+    role: str = Field(min_length=1, max_length=120)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence: str = Field(min_length=1, max_length=300)
+
+
+class RequestDecision(BaseModel):
+    """Combined request intent and catalog-target resolution output."""
 
     goal: GoalName
     reason: str = Field(min_length=1, max_length=300)
@@ -711,6 +731,8 @@ class GoalDecision(BaseModel):
     assessment_requested: bool = False
     role_constraints: list[str] = Field(default_factory=list, max_length=5)
     role_evidence: str | None = Field(default=None, max_length=300)
+    role_source: RoleSource = "none"
+    role_candidates: list[RoleCandidate] = Field(default_factory=list, max_length=5)
     review_target_role: str | None = Field(default=None, max_length=160)
     review_mode: ReviewMode = "general"
     review_focus: str | None = Field(default=None, max_length=200)
@@ -718,19 +740,16 @@ class GoalDecision(BaseModel):
     needs_cv_text: bool = False
     needs_cv_features: bool = False
     is_follow_up: bool = False
-    scrape_request: ScrapeRequest = Field(default_factory=ScrapeRequest)
-
-
-class TargetResolution(BaseModel):
-    """Stage 2 output: explicit references resolved against supplied catalogs."""
-
     cv_target_scope: CvTargetScope = "none"
-    selected_cv_ids: list[str] = Field(default_factory=list, max_length=MAX_CV_DOCUMENTS)
+    selected_cv_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_CV_DOCUMENTS,
+    )
     job_target_scope: JobTargetScope = "none"
     selected_job_keys: list[str] | None = Field(default=None, max_length=20)
     unresolved_references: list[str] = Field(default_factory=list, max_length=8)
-    ambiguous: bool = False
-    reason: str = Field(min_length=1, max_length=300)
+    targets_ambiguous: bool = False
+    scrape_request: ScrapeRequest = Field(default_factory=ScrapeRequest)
 
 
 class WorkflowPlan(BaseModel):
@@ -782,12 +801,85 @@ def merge_maps(
     return {**(left or {}), **(right or {})}
 
 
+class RoutingRequestState(TypedDict, total=False):
+    goal: GoalName
+    goal_reason: str
+    decision_confidence: float
+    job_source: JobSource
+    job_input_text: str | None
+    job_intent: JobSemanticIntent
+    score_requested: bool
+    assessment_requested: bool
+    show_score: bool
+    refresh_requested: bool
+    match_detail_level: str
+    role_constraints: list[str]
+    role_evidence: str | None
+    role_source: RoleSource
+    role_candidates: list[dict[str, Any]]
+    review_target_role: str | None
+    review_mode: ReviewMode
+    review_focus: str | None
+    review_mode_reason: str | None
+    needs_cv_text: bool
+    needs_cv_features: bool
+    is_follow_up: bool
+    scrape_request: dict[str, Any]
+
+
+class RoutingTargetsState(TypedDict, total=False):
+    cv_target_scope: CvTargetScope
+    selected_cv_ids: list[str]
+    selected_cv_id: str | None
+    job_target_scope: JobTargetScope
+    selected_job_keys: list[str] | None
+    unresolved_references: list[str]
+    targets_ambiguous: bool
+
+
+class RoutingPlanState(TypedDict, total=False):
+    action: RouteName
+    reason: str
+    validation: str
+    validation_error: str | None
+    semantic_intent: str
+    planned_stages: list[str]
+    policy_reason: str
+    active_goal_id: str | None
+    completed_actions: list[str]
+
+
+class RoutingState(TypedDict, total=False):
+    request: RoutingRequestState
+    targets: RoutingTargetsState
+    plan: RoutingPlanState
+
+
+def merge_routing_maps(
+    left: RoutingState | None,
+    right: RoutingState | None,
+) -> RoutingState:
+    merged: dict[str, Any] = dict(left or {})
+    for section, update in (right or {}).items():
+        if isinstance(update, dict) and isinstance(merged.get(section), dict):
+            merged[section] = {**merged[section], **update}
+        else:
+            merged[section] = update
+    return merged  # type: ignore[return-value]
+
+
 class ConversationState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_chat_messages]
     pending_cv_upload: dict[str, Any] | None
     pending_cv_uploads: list[dict[str, Any]] | None
     input_error: bool
     cv: Annotated[dict[str, Any], merge_maps]
+    routing: Annotated[RoutingState, merge_routing_maps]
+    # Transitional top-level routing buckets are read-only fallbacks.
+    request: dict[str, Any]
+    targets: dict[str, Any]
+    plan: dict[str, Any]
+    # Legacy routing buckets are retained as read fallbacks for old helpers.
     router: Annotated[dict[str, Any], merge_maps]
     selection: Annotated[dict[str, Any], merge_maps]
     jobs: Annotated[dict[str, Any], merge_maps]
@@ -814,14 +906,65 @@ def cv_bucket(state: ConversationState) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def router_bucket(state: ConversationState) -> dict[str, Any]:
+def routing_bucket(state: ConversationState) -> dict[str, Any]:
+    value = state.get("routing")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def request_bucket(state: ConversationState) -> dict[str, Any]:
+    value = routing_bucket(state).get("request")
+    if isinstance(value, dict):
+        return dict(value)
+    value = state.get("request")
+    if isinstance(value, dict):
+        return dict(value)
     value = state.get("router")
     return dict(value) if isinstance(value, dict) else {}
 
 
-def selection_bucket(state: ConversationState) -> dict[str, Any]:
+def targets_bucket(state: ConversationState) -> dict[str, Any]:
+    value = routing_bucket(state).get("targets")
+    if isinstance(value, dict):
+        return dict(value)
+    value = state.get("targets")
+    if isinstance(value, dict):
+        return dict(value)
     value = state.get("selection")
     return dict(value) if isinstance(value, dict) else {}
+
+
+def plan_bucket(state: ConversationState) -> dict[str, Any]:
+    value = routing_bucket(state).get("plan")
+    if isinstance(value, dict):
+        return dict(value)
+    value = state.get("plan")
+    if isinstance(value, dict):
+        return dict(value)
+    value = state.get("router")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def router_bucket(state: ConversationState) -> dict[str, Any]:
+    legacy = state.get("router")
+    merged: dict[str, Any] = dict(legacy) if isinstance(legacy, dict) else {}
+    merged.update(request_bucket(state))
+    merged.update(plan_bucket(state))
+    plan: dict[str, Any] = plan_bucket(state)
+    if plan.get("action") is not None:
+        merged["route"] = plan.get("action")
+    if plan.get("reason") is not None:
+        merged["route_reason"] = plan.get("reason")
+    if plan.get("validation") is not None:
+        merged["plan_validation"] = plan.get("validation")
+    return merged
+
+
+def selection_bucket(state: ConversationState) -> dict[str, Any]:
+    legacy = state.get("selection")
+    merged: dict[str, Any] = dict(legacy) if isinstance(legacy, dict) else {}
+    merged.update(request_bucket(state))
+    merged.update(targets_bucket(state))
+    return merged
 
 
 def jobs_bucket(state: ConversationState) -> dict[str, Any]:
@@ -838,7 +981,7 @@ def completed_actions(state: ConversationState) -> list[str]:
     """Return the valid agent actions completed during this user message."""
     return [
         action
-        for action in router_bucket(state).get("completed_actions") or []
+        for action in plan_bucket(state).get("completed_actions") or []
         if isinstance(action, str) and action in AGENT_ACTIONS
     ]
 
@@ -854,12 +997,19 @@ def record_completed_action(
     actions: list[str] = completed_actions(state)
     if action not in actions:
         actions.append(action)
-    router_update: Any = update.get("router")
+    routing_update: Any = update.get("routing")
+    plan_update: Any = (
+        routing_update.get("plan")
+        if isinstance(routing_update, dict)
+        else update.get("plan") or update.get("router")
+    )
     nested: dict[str, Any] = (
-        dict(router_update) if isinstance(router_update, dict) else {}
+        dict(plan_update) if isinstance(plan_update, dict) else {}
     )
     rest: dict[str, Any] = {
-        key: value for key, value in update.items() if key != "router"
+        key: value
+        for key, value in update.items()
+        if key not in {"router", "plan", "routing"}
     }
     if emit_result and action in USER_FACING_ACTIONS:
         payload: dict[str, Any] | None = slim_action_result(action, update, state)
@@ -872,10 +1022,11 @@ def record_completed_action(
                 rest["messages"] = [*existing_messages, *result_messages]
             else:
                 rest["messages"] = result_messages
-    recorded: dict[str, Any] = {
-        **rest,
-        "router": {**nested, "completed_actions": actions},
-    }
+    recorded_routing: dict[str, Any] = (
+        dict(routing_update) if isinstance(routing_update, dict) else {}
+    )
+    recorded_routing["plan"] = {**nested, "completed_actions": actions}
+    recorded: dict[str, Any] = {**rest, "routing": recorded_routing}
     snapshot: dict[str, Any] | None = reusable_action_snapshot(action, update, state)
     if snapshot is None:
         return recorded
@@ -887,8 +1038,18 @@ def record_completed_action(
         merged_state["cv"] = {**cv_bucket(state), **update["cv"]}
     if isinstance(update.get("jobs"), dict):
         merged_state["jobs"] = {**jobs_bucket(state), **update["jobs"]}
+    if isinstance(update.get("routing"), dict):
+        merged_state["routing"] = merge_routing_maps(
+            routing_bucket(state),
+            update["routing"],
+        )
+    if isinstance(update.get("targets"), dict):
+        merged_state["targets"] = {**targets_bucket(state), **update["targets"]}
     if isinstance(update.get("selection"), dict):
-        merged_state["selection"] = {**selection_bucket(state), **update["selection"]}
+        merged_state["targets"] = {
+            **targets_bucket(state),
+            **update["selection"],
+        }
     fingerprint: str | None = action_fingerprint(action, merged_state)
     if not fingerprint:
         return recorded
@@ -1432,19 +1593,36 @@ def is_cv_upload_turn(state: ConversationState) -> bool:
     return PDF_UPLOAD_MARKER in last_user_text(state)
 
 
-def default_selection_fields() -> dict[str, Any]:
+def default_request_fields() -> dict[str, Any]:
     return {
+        "goal": "general_question",
+        "goal_reason": "",
+        "decision_confidence": 1.0,
         "job_source": "none",
         "job_input_text": None,
+        "job_intent": "none",
         "score_requested": False,
         "assessment_requested": False,
         "show_score": False,
         "refresh_requested": False,
         "match_detail_level": "summary",
+        "role_constraints": [],
+        "role_evidence": None,
+        "role_source": "none",
+        "role_candidates": [],
         "review_target_role": None,
         "review_mode": "general",
         "review_focus": None,
         "review_mode_reason": None,
+        "needs_cv_text": False,
+        "needs_cv_features": False,
+        "is_follow_up": False,
+        "scrape_request": {},
+    }
+
+
+def default_target_fields() -> dict[str, Any]:
+    return {
         "cv_target_scope": "none",
         "selected_cv_ids": [],
         "selected_cv_id": None,
@@ -1452,8 +1630,12 @@ def default_selection_fields() -> dict[str, Any]:
         "selected_job_keys": None,
         "unresolved_references": [],
         "targets_ambiguous": False,
-        "stage2_complete": False,
     }
+
+
+def default_selection_fields() -> dict[str, Any]:
+    """Compatibility view for legacy helpers; active state uses request/targets."""
+    return {**default_request_fields(), **default_target_fields()}
 
 
 def cv_version(document: dict[str, Any] | None) -> str:
@@ -1809,6 +1991,39 @@ def role_constraints_from_cv(document: dict[str, Any] | None) -> list[str]:
     return normalize_role_constraints(features.get("role_tags") or [])
 
 
+def normalize_role_candidates(values: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in values or []:
+        if isinstance(item, RoleCandidate):
+            raw_role: Any = item.role
+            raw_confidence: Any = item.confidence
+            raw_evidence: Any = item.evidence
+        elif isinstance(item, dict):
+            raw_role = item.get("role")
+            raw_confidence = item.get("confidence", 1.0)
+            raw_evidence = item.get("evidence")
+        else:
+            continue
+        role: str = normalize_fingerprint_text(raw_role)
+        evidence: str = short_text(raw_evidence or "", 300)
+        if not role or role in seen or not evidence:
+            continue
+        try:
+            confidence: float = max(0.0, min(1.0, float(raw_confidence)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        seen.add(role)
+        candidates.append(
+            {
+                "role": role,
+                "confidence": confidence,
+                "evidence": evidence,
+            }
+        )
+    return sorted(candidates, key=lambda item: item["confidence"], reverse=True)[:5]
+
+
 def build_active_job_goal(
     *,
     source: str,
@@ -1888,7 +2103,10 @@ def planned_job_stages(
 ) -> list[str]:
     gated: ConversationState = {
         **state,
-        "selection": selection,
+        "routing": {
+            "request": request_state_fields(selection),
+            "targets": target_state_fields(selection),
+        },
         "jobs": {**jobs_bucket(state), **jobs_update},
     }
     refresh: bool = bool(selection.get("refresh_requested"))
@@ -1942,8 +2160,18 @@ def apply_job_request_policy(
         {**state, "jobs": {**jobs_bucket(state), **jobs_update}}
     )
     document: dict[str, Any] | None = unambiguous_extracted_cv(
-        {**state, "selection": selection}
+        {
+            **state,
+            "routing": {
+                "request": request_state_fields(selection),
+                "targets": target_state_fields(selection),
+            },
+        }
     )
+    role_candidates: list[dict[str, Any]] = normalize_role_candidates(
+        decision.role_candidates
+    )
+    selection = {**selection, "role_candidates": role_candidates}
 
     def attach_goal(goal: dict[str, Any] | None) -> dict[str, Any] | None:
         if goal is None:
@@ -2473,7 +2701,10 @@ def apply_action_reuse(
         return route, route_reason, cv_update, jobs_update
     gated: ConversationState = {
         **state,
-        "selection": selection,
+        "routing": {
+            "request": request_state_fields(selection),
+            "targets": target_state_fields(selection),
+        },
         "jobs": {**jobs_bucket(state), **jobs_update},
     }
     fingerprint: str | None = action_fingerprint(route, gated)
@@ -2967,14 +3198,16 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         "cv": {
             "needs_extraction": False,
         },
-        "router": {
-            "completed_actions": [],
-            "needs_cv_text": False,
-            "needs_cv_features": False,
-            "stage1_complete": False,
-            "stage3_complete": False,
+        "routing": {
+            "request": default_request_fields(),
+            "targets": default_target_fields(),
+            "plan": {
+                "action": "respond",
+                "reason": "Awaiting request routing.",
+                "validation": "pending",
+                "completed_actions": [],
+            },
         },
-        "selection": default_selection_fields(),
         "response": None,
         "errors": [],
     }
@@ -3069,36 +3302,34 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
     return updates
 
 
-GOAL_ROUTER_PROMPT: str = """You are Stage 1, the intent router for a CV and job assistant.
-Identify the user's goal only. Do not choose an executable action, inspect
-readiness, resolve catalog IDs, or decide which prerequisite runs next.
+REQUEST_ROUTER_PROMPT: str = """You are the request router for a CV and job assistant.
+Understand the user's goal and resolve referenced CVs, jobs, and match results
+in one structured decision. Do not choose the next executable workflow action.
 
 Allowed goals:
-- review_cv: review or improve one CV
-- compare_cvs: compare two or more CVs
-- search_jobs: search or refresh live jobs without asking for CV fit
-- assess_cvs_against_jobs: assess one or more CVs against job postings
-- recommend_existing_match: recommend from already-produced match results
-- explain_existing_match: explain an existing match or its strengths and gaps
-- general_question: conversation, CV advice, or follow-up that needs no action
-- extract_cv: explicitly parse or refresh CV extraction only
-- extract_job: extract or summarize a pasted job description
+- review_cv, compare_cvs, search_jobs
+- assess_cvs_against_jobs, recommend_existing_match, explain_existing_match
+- general_question, extract_cv, extract_job
 
-Use the latest message and recent conversation. Preserve exact role evidence for
-new searches. Set job_intent, job_source, review parameters, and CV context
-flags, but do not make decisions based on missing extraction or existing state.
-For follow-ups, set is_follow_up=true. Return only the structured decision.
-"""
+Use exact CV IDs and job keys from the supplied catalogs. Never invent an ID or
+key. Resolve phrases such as these CVs, the second CV, those jobs, jobs from
+before, the first result, one job, and all jobs. If a reference is ambiguous or
+absent, set targets_ambiguous=true and list unresolved_references.
 
-TARGET_RESOLVER_PROMPT: str = """You are Stage 2, the target resolver for a CV and job assistant.
-Resolve references only. Use exact IDs and keys from the supplied catalogs.
-Never invent an ID or key and never decide which workflow action runs.
+For a job search with no explicit role, inspect the supplied structured CV
+profiles. If one role is clearly supported, put it in role_constraints and set
+role_source=cv_inferred. If several roles are plausible, leave role_constraints
+empty and return up to five role_candidates with confidence and profile-based
+evidence. Do not infer roles when no extracted CV profile is available.
 
-Resolve phrases such as these CVs, the second CV, those jobs, jobs from before,
-the first result, one job, and all jobs. For an unambiguous implicit request,
-return the applicable catalog IDs. If a reference is ambiguous or absent, set
-ambiguous=true and list it in unresolved_references. Return only the structured
-resolution.
+Role precedence:
+- explicit role in the latest message -> role_source=explicit
+- active goal refresh/follow-up -> role_source=active_goal
+- role inferred from an extracted CV profile -> role_source=cv_inferred
+- otherwise -> role_source=none
+
+Set job_intent, job_source, assessment_requested, review parameters, and
+follow-up flags. Return only the structured request decision.
 """
 
 WORKFLOW_PLANNER_PROMPT: str = """You are Stage 3, the workflow planner for a CV and job assistant.
@@ -3173,12 +3404,34 @@ def routing_catalogs(state: ConversationState) -> dict[str, Any]:
     }
 
 
-def goal_router_context(state: ConversationState) -> dict[str, Any]:
+def routing_cv_profiles(state: ConversationState) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for document in extracted_cv_documents(state)[:MAX_CV_DOCUMENTS]:
+        features: Any = document.get("cv_features")
+        if not isinstance(features, dict):
+            continue
+        summary: dict[str, Any] = cv_feature_summary(features)
+        profiles.append(
+            {
+                "id": str(document.get("id") or ""),
+                "filename": str(document.get("filename") or "cv.pdf"),
+                **summary,
+            }
+        )
+    return profiles
+
+
+def request_router_context(state: ConversationState) -> dict[str, Any]:
+    catalogs: dict[str, Any] = routing_catalogs(state)
     return {
         "latest_user_message": last_user_text(state)[:MAX_ROUTER_CHARS],
         "recent_conversation": router_recent_conversation(state),
         "conversation_memory": conversation_memory(state),
         "active_job_goal": active_job_goal(state),
+        "cv_profiles": routing_cv_profiles(state),
+        "cvs": catalogs["cvs"],
+        "jobs": catalogs["jobs"],
+        "matches": catalogs["matches"],
     }
 
 
@@ -3190,11 +3443,11 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
         for document in extracted_cv_documents(state)
         if str(document.get("id") or "").strip()
     ]
-    selection: dict[str, Any] = selection_bucket(state)
-    router: dict[str, Any] = router_bucket(state)
+    targets: dict[str, Any] = targets_bucket(state)
+    request: dict[str, Any] = request_bucket(state)
     return {
         "goal": {
-            key: router.get(key)
+            key: request.get(key)
             for key in (
                 "goal",
                 "goal_reason",
@@ -3220,7 +3473,7 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
                 "unresolved_references",
                 "targets_ambiguous",
             )
-            if selection.get(key) is not None
+            if targets.get(key) is not None
         },
         "state_facts": {
             "cv_count": len(documents),
@@ -3238,126 +3491,112 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
                 0,
                 MAX_AGENT_ACTIONS - len(completed_actions(state)),
             ),
-            "refresh_requested": bool(selection.get("refresh_requested")),
+            "refresh_requested": bool(request.get("refresh_requested")),
             "pasted_job_available": bool(
-                (selection.get("job_input_text") or "").strip()
+                (request.get("job_input_text") or "").strip()
             ),
         },
     }
 
 
-async def goal_router_node(
+REQUEST_STATE_KEYS: frozenset[str] = frozenset(
+    {
+        "goal",
+        "goal_reason",
+        "decision_confidence",
+        "job_source",
+        "job_input_text",
+        "job_intent",
+        "score_requested",
+        "assessment_requested",
+        "show_score",
+        "refresh_requested",
+        "match_detail_level",
+        "role_constraints",
+        "role_evidence",
+        "role_source",
+        "role_candidates",
+        "review_target_role",
+        "review_mode",
+        "review_focus",
+        "review_mode_reason",
+        "needs_cv_text",
+        "needs_cv_features",
+        "is_follow_up",
+        "scrape_request",
+    }
+)
+TARGET_STATE_KEYS: frozenset[str] = frozenset(
+    {
+        "cv_target_scope",
+        "selected_cv_ids",
+        "selected_cv_id",
+        "job_target_scope",
+        "selected_job_keys",
+        "unresolved_references",
+        "targets_ambiguous",
+    }
+)
+
+
+def request_state_fields(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: value[key] for key in REQUEST_STATE_KEYS if key in value}
+
+
+def target_state_fields(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: value[key] for key in TARGET_STATE_KEYS if key in value}
+
+
+async def request_router_node(
     state: ConversationState,
     chat_model: ChatModel,
 ) -> dict[str, Any]:
     latest: str = last_user_text(state)
     if not latest:
-        decision = GoalDecision(
+        decision = RequestDecision(
             goal="general_question",
             reason="No user message was provided.",
         )
     else:
         try:
-            classifier: Any = chat_model.structured(GoalDecision)
+            classifier: Any = chat_model.structured(RequestDecision)
             decision = await classifier.ainvoke(
                 [
-                    {"role": "system", "content": GOAL_ROUTER_PROMPT},
+                    {"role": "system", "content": REQUEST_ROUTER_PROMPT},
                     {
                         "role": "user",
-                        "content": "GOAL ROUTING DATA ONLY:\n"
-                        + json.dumps(goal_router_context(state), ensure_ascii=False),
+                        "content": "REQUEST ROUTING DATA ONLY:\n"
+                        + json.dumps(
+                            request_router_context(state),
+                            ensure_ascii=False,
+                        ),
                     },
                 ]
             )
         except Exception as exc:
-            decision = GoalDecision(
+            decision = RequestDecision(
                 goal="general_question",
-                reason="Goal router failed; using the conversational fallback.",
+                reason="Request router failed; using the conversational fallback.",
             )
             return {
-                "router": {
-                    **decision.model_dump(),
-                    "goal_reason": decision.reason,
-                    "stage1_complete": True,
+                "routing": {
+                    "request": {
+                        **default_request_fields(),
+                        "goal": decision.goal,
+                        "goal_reason": decision.reason,
+                    },
+                    "targets": default_target_fields(),
                 },
                 "errors": state_errors(
                     state,
-                    [f"Goal router failed: {type(exc).__name__}: {exc}"],
+                    [f"Request router failed: {type(exc).__name__}: {exc}"],
                 ),
             }
 
-    return {
-        "router": {
-            **decision.model_dump(),
-            "goal_reason": decision.reason,
-            "stage1_complete": True,
-        }
-    }
-
-
-async def target_resolver_node(
-    state: ConversationState,
-    chat_model: ChatModel,
-) -> dict[str, Any]:
-    router: dict[str, Any] = router_bucket(state)
     catalogs: dict[str, Any] = routing_catalogs(state)
-    goal: dict[str, Any] = {
-        key: router.get(key)
-        for key in (
-            "goal",
-            "goal_reason",
-            "job_intent",
-            "job_source",
-            "assessment_requested",
-            "review_mode",
-            "review_focus",
-        )
-        if router.get(key) is not None
-    }
-    try:
-        resolver: Any = chat_model.structured(TargetResolution)
-        resolution: TargetResolution = await resolver.ainvoke(
-            [
-                {"role": "system", "content": TARGET_RESOLVER_PROMPT},
-                {
-                    "role": "user",
-                    "content": "TARGET RESOLUTION DATA ONLY:\n"
-                    + json.dumps(
-                        {
-                            "latest_user_message": last_user_text(state),
-                            "recent_conversation": router_recent_conversation(state),
-                            "goal": goal,
-                            "cvs": catalogs["cvs"],
-                            "jobs": catalogs["jobs"],
-                            "matches": catalogs["matches"],
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ]
-        )
-    except Exception as exc:
-        resolution = TargetResolution(
-            ambiguous=True,
-            unresolved_references=["target resolution"],
-            reason="Target resolver failed; clarification is required.",
-        )
-        return {
-            "selection": {
-                **default_selection_fields(),
-                "targets_ambiguous": True,
-                "unresolved_references": resolution.unresolved_references,
-                "stage2_complete": True,
-            },
-            "errors": state_errors(
-                state,
-                [f"Target resolver failed: {type(exc).__name__}: {exc}"],
-            ),
-        }
-
     selected_cv_ids: list[str] = []
     invalid_cv_ids: list[str] = []
-    for item in resolution.selected_cv_ids:
+    for item in decision.selected_cv_ids:
         value: str = str(item).strip()
         if not value:
             continue
@@ -3369,7 +3608,7 @@ async def target_resolver_node(
     selected_job_keys: list[str] = []
     invalid_job_keys: list[str] = []
     valid_job_keys: set[str] = catalogs["job_keys"] | catalogs["match_keys"]
-    for item in resolution.selected_job_keys or []:
+    for item in decision.selected_job_keys or []:
         value = str(item).strip()
         if not value:
             continue
@@ -3379,39 +3618,43 @@ async def target_resolver_node(
             invalid_job_keys.append(value)
 
     unresolved: list[str] = [
-        *resolution.unresolved_references,
+        *decision.unresolved_references,
         *(f"unknown CV: {item}" for item in invalid_cv_ids),
         *(f"unknown job: {item}" for item in invalid_job_keys),
     ]
-    ambiguous: bool = bool(resolution.ambiguous or unresolved)
-    if resolution.job_target_scope == "all":
+    targets_ambiguous: bool = bool(decision.targets_ambiguous or unresolved)
+    if decision.job_target_scope == "all":
         selected_job_keys = []
-    selection: dict[str, Any] = {
-        **default_selection_fields(),
-        "job_source": router.get("job_source") or "none",
-        "job_input_text": (
-            last_user_text(state) if router.get("job_source") == "pasted" else None
+
+    request: dict[str, Any] = {
+        **default_request_fields(),
+        **request_state_fields(decision.model_dump()),
+        "goal_reason": decision.reason,
+        "job_source": (
+            "pasted" if decision.goal == "extract_job" else decision.job_source
         ),
-        "score_requested": bool(router.get("score_requested")),
-        "assessment_requested": bool(router.get("assessment_requested")),
-        "show_score": bool(router.get("score_requested")),
-        "refresh_requested": router.get("job_intent") == "refresh_current_goal",
-        "review_target_role": router.get("review_target_role"),
-        "review_mode": router.get("review_mode") or "general",
-        "review_focus": router.get("review_focus"),
-        "review_mode_reason": router.get("review_mode_reason"),
-        "cv_target_scope": resolution.cv_target_scope,
+        "job_input_text": (
+            latest if decision.job_source == "pasted" else None
+        ),
+        "show_score": bool(decision.score_requested),
+        "refresh_requested": decision.job_intent == "refresh_current_goal",
+        "role_candidates": [
+            item.model_dump() for item in decision.role_candidates
+        ],
+    }
+    targets: dict[str, Any] = {
+        **default_target_fields(),
+        "cv_target_scope": decision.cv_target_scope,
         "selected_cv_ids": selected_cv_ids,
         "selected_cv_id": (
             selected_cv_ids[0] if len(selected_cv_ids) == 1 else None
         ),
-        "job_target_scope": resolution.job_target_scope,
+        "job_target_scope": decision.job_target_scope,
         "selected_job_keys": selected_job_keys or None,
         "unresolved_references": unresolved,
-        "targets_ambiguous": ambiguous,
-        "stage2_complete": True,
+        "targets_ambiguous": targets_ambiguous,
     }
-    return {"selection": selection}
+    return {"routing": {"request": request, "targets": targets}}
 
 
 async def workflow_planner_node(
@@ -3436,10 +3679,12 @@ async def workflow_planner_node(
             reason="Workflow planner failed; using the conversational fallback.",
         )
         return {
-            "router": {
-                "planned_action": plan.action,
-                "planned_reason": plan.reason,
-                "stage3_complete": True,
+            "routing": {
+                "plan": {
+                    "action": plan.action,
+                    "reason": plan.reason,
+                    "validation": "pending",
+                },
             },
             "errors": state_errors(
                 state,
@@ -3448,20 +3693,24 @@ async def workflow_planner_node(
         }
 
     return {
-        "router": {
-            "planned_action": plan.action,
-            "planned_reason": plan.reason,
-            "stage3_complete": True,
+        "routing": {
+            "plan": {
+                "action": plan.action,
+                "reason": plan.reason,
+                "validation": "pending",
+            },
         }
     }
 
 
 def legacy_decision_from_stages(state: ConversationState) -> RouteDecision:
+    request: dict[str, Any] = request_bucket(state)
+    targets: dict[str, Any] = targets_bucket(state)
+    plan: dict[str, Any] = plan_bucket(state)
     router: dict[str, Any] = router_bucket(state)
-    selection: dict[str, Any] = selection_bucket(state)
-    goal: str = str(router.get("goal") or "general_question")
-    job_intent: JobSemanticIntent = router.get("job_intent") or "none"
-    job_source: JobSource = router.get("job_source") or "none"
+    goal: str = str(request.get("goal") or "general_question")
+    job_intent: JobSemanticIntent = request.get("job_intent") or "none"
+    job_source: JobSource = request.get("job_source") or "none"
     if goal == "search_jobs" and job_intent == "none":
         job_intent = "new_job_search"
     elif goal == "assess_cvs_against_jobs" and job_intent == "none":
@@ -3477,40 +3726,46 @@ def legacy_decision_from_stages(state: ConversationState) -> RouteDecision:
 
     selected_ids: list[str] = [
         str(item).strip()
-        for item in (selection.get("selected_cv_ids") or [])
+        for item in (targets.get("selected_cv_ids") or [])
         if str(item).strip()
     ]
     return RouteDecision(
-        route=router.get("planned_action") or "respond",
+        route=(
+            plan.get("action")
+            or router.get("planned_action")
+            or "respond"
+        ),
         reason=str(
-            router.get("planned_reason")
-            or router.get("goal_reason")
+            plan.get("reason")
+            or request.get("goal_reason")
             or "The workflow planner selected this action."
         ),
         job_intent=job_intent,
         job_source=job_source,
-        score_requested=bool(router.get("score_requested")),
-        assessment_requested=bool(router.get("assessment_requested")),
-        role_constraints=list(router.get("role_constraints") or []),
-        role_evidence=router.get("role_evidence"),
-        job_target_scope=selection.get("job_target_scope") or "none",
+        score_requested=bool(request.get("score_requested")),
+        assessment_requested=bool(request.get("assessment_requested")),
+        role_constraints=list(request.get("role_constraints") or []),
+        role_evidence=request.get("role_evidence"),
+        role_source=request.get("role_source") or "none",
+        role_candidates=list(request.get("role_candidates") or []),
+        job_target_scope=targets.get("job_target_scope") or "none",
         decision_confidence=float(
-            router.get("decision_confidence")
-            if router.get("decision_confidence") is not None
+            request.get("decision_confidence")
+            if request.get("decision_confidence") is not None
             else 1.0
         ),
-        review_target_role=router.get("review_target_role"),
-        review_mode=router.get("review_mode") or "general",
-        review_focus=router.get("review_focus"),
-        review_mode_reason=router.get("review_mode_reason"),
-        needs_cv_text=bool(router.get("needs_cv_text")),
-        needs_cv_features=bool(router.get("needs_cv_features"))
+        review_target_role=request.get("review_target_role"),
+        review_mode=request.get("review_mode") or "general",
+        review_focus=request.get("review_focus"),
+        review_mode_reason=request.get("review_mode_reason"),
+        needs_cv_text=bool(request.get("needs_cv_text")),
+        needs_cv_features=bool(request.get("needs_cv_features"))
         or goal in {"review_cv", "compare_cvs", "assess_cvs_against_jobs", "extract_cv"},
-        is_follow_up=bool(router.get("is_follow_up")),
+        is_follow_up=bool(request.get("is_follow_up")),
         selected_cv_id=selected_ids[0] if len(selected_ids) == 1 else None,
-        selected_job_keys=selection.get("selected_job_keys"),
+        selected_job_keys=targets.get("selected_job_keys"),
         scrape_request=ScrapeRequest(
-            **dict(router.get("scrape_request") or {})
+            **dict(request.get("scrape_request") or {})
         ),
     )
 
@@ -3593,14 +3848,14 @@ async def validate_plan_node(state: ConversationState) -> dict[str, Any]:
     base_error: str | None = planned_action_validation_error(state, decision)
     if base_error:
         return {
-            "router": {
-                "route": "respond",
-                "route_reason": base_error,
-                "plan_validation": "rejected",
-                "validation_error": base_error,
-                "semantic_intent": clarification_intent(state),
-                "needs_cv_text": bool(router_bucket(state).get("needs_cv_text")),
-                "needs_cv_features": bool(router_bucket(state).get("needs_cv_features")),
+            "routing": {
+                "plan": {
+                    "action": "respond",
+                    "reason": base_error,
+                    "validation": "rejected",
+                    "validation_error": base_error,
+                    "semantic_intent": clarification_intent(state),
+                },
             },
             "errors": state_errors(state, [base_error]),
         }
@@ -3611,7 +3866,7 @@ async def validate_plan_node(state: ConversationState) -> dict[str, Any]:
         "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
     }
     try:
-        goal: str = str(router_bucket(state).get("goal") or "")
+        goal: str = str(request_bucket(state).get("goal") or "")
         bypass_policy: bool = decision.route in {"extract_cv", "extract_job"} or (
             decision.route == "respond"
             and goal == "assess_cvs_against_jobs"
@@ -3662,21 +3917,26 @@ async def validate_plan_node(state: ConversationState) -> dict[str, Any]:
             )
         )
         result: dict[str, Any] = {
-            "router": {
-                "route": route,
-                "route_reason": route_reason,
-                "plan_validation": "accepted",
-                "validation_error": None,
-                "needs_cv_text": bool(decision.needs_cv_text),
-                "needs_cv_features": bool(decision.needs_cv_features),
-                "job_intent": decision.job_intent,
-                "decision_confidence": decision.decision_confidence,
-                "semantic_intent": policy.get("semantic_intent") or "none",
-                "planned_stages": policy.get("planned_stages") or [],
-                "policy_reason": policy.get("policy_reason") or "",
-                "active_goal_id": policy.get("active_goal_id"),
+            "routing": {
+                "request": {
+                    **request_state_fields(selection),
+                    "needs_cv_text": bool(decision.needs_cv_text),
+                    "needs_cv_features": bool(decision.needs_cv_features),
+                },
+                "targets": target_state_fields(selection),
+                "plan": {
+                    "action": route,
+                    "reason": route_reason,
+                    "validation": "accepted",
+                    "validation_error": None,
+                    "job_intent": decision.job_intent,
+                    "decision_confidence": decision.decision_confidence,
+                    "semantic_intent": policy.get("semantic_intent") or "none",
+                    "planned_stages": policy.get("planned_stages") or [],
+                    "policy_reason": policy.get("policy_reason") or "",
+                    "active_goal_id": policy.get("active_goal_id"),
+                },
             },
-            "selection": selection,
             "jobs": jobs_update,
         }
         if reused_cv:
@@ -3685,440 +3945,18 @@ async def validate_plan_node(state: ConversationState) -> dict[str, Any]:
     except Exception as exc:
         reason: str = "Python plan validation failed; using the conversational fallback."
         return {
-            "router": {
-                "route": "respond",
-                "route_reason": reason,
-                "plan_validation": "rejected",
-                "validation_error": reason,
-                "semantic_intent": "none",
-                "needs_cv_text": False,
-                "needs_cv_features": False,
+            "routing": {
+                "plan": {
+                    "action": "respond",
+                    "reason": reason,
+                    "validation": "rejected",
+                    "validation_error": reason,
+                    "semantic_intent": "none",
+                },
             },
             "errors": state_errors(
                 state,
                 [f"Plan validation failed: {type(exc).__name__}: {exc}"],
-            ),
-        }
-
-
-ROUTER_PROMPT: str = """You are the stateful planner for a conversational CV and
-job-search assistant. Choose exactly one next route for the current user
-message. A route identifies the user's goal. Prerequisite work such as CV
-extraction is handled by the workflow when needed; do not choose extract_cv
-just because extracted_cv_count is below cv_count.
-
-Routes:
-- extract_cv: only when the user explicitly asks to analyze, parse, or refresh
-  CV extraction with no review, comparison, matching, or role-advice goal.
-- review_cv: explicitly review, audit, score, or improve the quality of one uploaded CV.
-- compare_cvs: compare, rank, or evaluate two or more uploaded CVs against each other.
-- extract_job: extract and summarize a job description pasted in the latest message.
-- search_jobs: find, scrape, search, or refresh live job postings.
-- match_jobs: score uploaded CVs against already-loaded, pasted, or newly searched
-  job postings.
-- respond: general conversation, questions about already-loaded results, or advice
-  about which roles or job types fit the uploaded CV profiles when no live job
-  search or job-posting match is requested.
-
-Use recent_conversation together with latest_user_message. Prefer respond when
-the latest message continues, clarifies, reformats, or asks to reinterpret an
-already-available result. Examples: changing a score scale (1-5, 1-10, percent),
-asking for a shorter or longer rewrite of the prior review, clarifying what a
-previous answer meant, or asking follow-up questions about existing jobs,
-matches, reviews, or comparisons. In those cases set is_follow_up=true and do
-not choose review_cv, compare_cvs, search_jobs, match_jobs, extract_job, or
-extract_cv. Set is_follow_up=false only when the user requests a new action.
-
-Never choose a route listed in completed_actions; that list covers only the
-current user message. When a compatible current result is already available, the
-workflow reuses it. Choose respond for questions about that current result. If
-the user explicitly asks to refresh, rerun, search again, or review again,
-choose the action route even when a current result exists. Do not invent
-freshness claims. Choose respond when the user request is satisfied by the
-available state, including questions like "what type of jobs suit all of them?"
-when CVs are already loaded. When cv_review_available is true and the user is
-only asking how to present or convert that review, choose respond. When the user
-explicitly asks for a fresh CV review or CV comparison, keep review_cv or
-compare_cvs as the route even if cv_available is false or extracted_cv_count is
-below cv_count: the CV workflow will extract missing profiles before that goal.
-Never choose extract_cv
-when extracted_cv_count equals cv_count and the user did not explicitly ask to
-re-extract. Do not choose extract_cv for role or job-type recommendations; choose
-respond and set needs_cv_features=true. Do not choose match_jobs unless the user
-wants scores against concrete job postings that are loaded, pasted, or searched.
-For "What do you think?", "What do u think?", "How about this?", or similarly
-broad feedback:
-- if cv_count is 1, choose review_cv
-- if cv_count is 2 or more and the user did not name one specific CV, choose
-  compare_cvs
-- if cv_count is 2 or more and the user names one CV, choose review_cv and set
-  selected_cv_id
-Do not apply those broad-feedback rules when recent_conversation already contains
-a CV review or comparison answer and the latest message only follows up on it.
-Uploading another CV with a broad feedback request after earlier CVs already
-exist is a compare_cvs request, not a single-CV review.
-When the user asks to compare, contrast, rank, or choose between multiple
-uploaded CVs, choose compare_cvs.
-Do not choose match_jobs for CV-to-CV comparison. Every job operation must set
-exactly one job_intent:
-- new_job_search: search for a newly named role, technology, or location without
-  assessing CV fit. Choose search_jobs, job_source=search, and
-  assessment_requested=false.
-- search_and_assess: search a newly named goal and assess the results against a
-  CV. Choose match_jobs, job_source=search, and assessment_requested=true.
-- assess_existing_jobs: assess jobs already present in jobs. Choose match_jobs,
-  job_source=existing, and assessment_requested=true.
-  When the latest user message asks whether current jobs match their CV, use this
-  intent even if no individual job is named; never invent a new role search.
-- recommend_best_existing: recommend from current match results without new
-  scraping or matching. Choose respond.
-- explain_existing_match: explain why selected existing matches fit or do not
-  fit. Choose respond.
-- show_match_details: give a detailed breakdown for selected existing matches.
-  Choose respond.
-- refresh_current_goal: search the active_job_goal again without changing its
-  constraints. Use this for contextual requests such as "find some" or "search
-  again" when no new role is explicitly named and current matches cannot answer.
-- cancel_current_goal: cancel the active goal. Choose respond.
-- none: no job operation is requested.
-
-For new_job_search and search_and_assess, return concise role_constraints and
-role_evidence copied exactly and contiguously from latest_user_message. Never
-derive role_constraints from vague words, pronouns, the prior conversation, raw
-CV text, or an existing goal. Leave role_constraints empty and role_evidence
-null for every other intent. If a newly named role is clear, do not inherit CV
-assessment unless the latest message asks for fit or matching.
-Never emit new_job_search or search_and_assess with an empty role_constraints or
-role_evidence when the latest message names a searchable role; copy the role
-phrase into both fields.
-If the latest message names a new role and explicitly says to compare or match
-the results with the user's CV or resume, use search_and_assess rather than
-new_job_search.
-For new_job_search and search_and_assess, set job_target_scope=none and
-selected_job_keys=null. Existing job keys never constrain a new search.
-
-For refresh_current_goal, role_constraints must be empty. Preserve the active
-goal. Set assessment_requested=true for a contextual search following a
-CV-derived role recommendation or when the latest message explicitly asks for
-CV or resume fit. A plain "search again", "refresh", or "find more" request
-must set assessment_requested=false, even if earlier turns included CV matching.
-If the latest message repeats the active role and says "again" or "refresh",
-keep that active goal and refresh it rather than creating a conflicting new one.
-When matches_available is true, "Could u find the match one for me then?" is
-recommend_best_existing and must reuse those assessments while preserving the
-Back End Engineering goal. It is never a new goal.
-
-For recommend_best_existing, explain_existing_match, and show_match_details,
-use matches only and never request new execution. Set job_target_scope=one with
-exactly one selected match key, or all with no selected keys. Use none only for
-recommend_best_existing when all current matches are the comparison set. If the
-target is unclear, use decision_confidence below 0.75 and do not guess.
-When valid job results exist but no match results exist, a request to show,
-list, or display the jobs, roles, openings, or results that were found is a
-plain job-list response. Do not classify it as match details.
-When match results exist, requests to summarize fit, explain why, or discuss
-strengths and gaps must reuse those match results with explain_existing_match;
-they must never invoke matching again.
-
-Set decision_confidence to reflect semantic certainty. Use a value below 0.75
-for ambiguous, contradictory, or unresolved job requests. Set
-score_requested=true only when the user explicitly requests a numeric match
-score, rating, grade, or percentage. Matching does not itself request a number.
-CV-to-CV comparison leaves job_intent=none, job_source=none,
-assessment_requested=false, and score_requested=false.
-
-Set job_source to pasted for a pasted job description, search for live external
-postings, existing for loaded jobs or matches, and none when no job input is
-involved.
-
-Set needs_cv_text=true only when the reply must use the raw CV wording or sections
-(ambiguity, rewrite feedback, quote experience, review a specific part). Leave it
-false for job search, matching, scores, CV comparison, or answers that only need
-structured CV fields already extracted.
-
-Set needs_cv_features=true when respond must use extracted CV profile features,
-such as recommending suitable roles or job types for one or more uploaded CVs.
-Leave needs_cv_features=false for chitchat, search_jobs, extract_job, and answers
-that do not need CV profiles. review_cv, compare_cvs, match_jobs, and extract_cv
-always depend on CV features; you may leave needs_cv_features=false for those
-routes because the workflow already treats them as CV-dependent.
-
-For review_cv, set review_target_role only when the user explicitly names the
-role they want the CV reviewed for (for example, "Backend Engineer"). Otherwise
-leave it null. Set review_mode=scored only when the user explicitly asks for a
-numerical score, rating, or grade. Set review_mode=focused when they ask about a
-specific CV section or aspect (for example, work experience, projects, summary,
-or career change) and set review_focus to that aspect. Use review_mode=general
-for a broad review or improvement request. A CV-quality review is not job
-matching: leave job_source=none and score_requested=false. Always set
-review_mode_reason for review_cv in one concise sentence that refers to the
-user's request, such as "The user asked for a numerical CV rating." Leave it
-null for every other route.
-
-For review_cv or match_jobs, set selected_cv_id to the matching id from the cvs
-catalog when the user names a CV by filename, order, or other unambiguous
-reference. Never invent an id. Resolve job references only against the supplied
-jobs and matches catalogs, using their exact keys and row numbers. Never extract
-job targets in Python or return a key absent from those catalogs.
-
-Job searches may include optional sites and recency. The deterministic reducer
-builds keywords from validated role_constraints, so do not copy the full user
-message into scrape_request.keywords. CV content is supplied separately as an
-uploaded PDF payload, not through ordinary chat text.
-"""
-
-
-async def route_message(
-    state: ConversationState,
-    chat_model: ChatModel | None = None,
-) -> dict[str, Any]:
-    latest: str = last_user_text(state)
-    if not latest:
-        return {
-            "router": {
-                "route": "respond",
-                "route_reason": "No user message was provided.",
-                "needs_cv_text": False,
-                "needs_cv_features": False,
-            },
-            "selection": default_selection_fields(),
-        }
-
-    router: Any = (chat_model or ChatModel.from_env()).structured(RouteDecision)
-
-    documents: list[dict[str, Any]] = state_cv_documents(state)
-    extracted_documents: list[dict[str, Any]] = [
-        doc for doc in documents if doc.get("cv_features")
-    ]
-    known_cv_ids: set[str] = {
-        str(doc.get("id") or "")
-        for doc in documents
-        if str(doc.get("id") or "").strip()
-    }
-    job_results: Any = jobs_bucket(state).get("results") or []
-    job_catalog: list[dict[str, Any]] = []
-    known_job_keys: set[str] = set()
-    for index, item in enumerate(job_results):
-        if not isinstance(item, dict):
-            continue
-        card: Any = item.get("job_card")
-        key: str = job_selection_key(item, index)
-        known_job_keys.add(key)
-        entry: dict[str, Any] = {"key": key, "row": index + 1}
-        if isinstance(card, dict):
-            if card.get("title"):
-                entry["title"] = card.get("title")
-            if card.get("company"):
-                entry["company"] = card.get("company")
-        job_catalog.append(entry)
-    match_catalog: list[dict[str, Any]] = []
-    known_match_keys: set[str] = set()
-    for item in jobs_bucket(state).get("matches") or []:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("job_key") or "").strip()
-        if not key or key in known_match_keys:
-            continue
-        known_match_keys.add(key)
-        card = item.get("job_card")
-        entry = {"key": key, "row": len(match_catalog) + 1}
-        if isinstance(card, dict):
-            if card.get("title"):
-                entry["title"] = card.get("title")
-            if card.get("company"):
-                entry["company"] = card.get("company")
-        match_catalog.append(entry)
-    review: dict[str, Any] | None = existing_cv_review(state)
-    review_summary: dict[str, Any] | None = None
-    if review is not None:
-        review_summary = {
-            "status": review.get("status"),
-            "mode": review.get("mode"),
-            "overall_score": review.get("overall_score"),
-            "score_scale": 100 if review.get("overall_score") is not None else None,
-            "feedback_count": len(review.get("feedback") or []),
-        }
-    context: dict[str, Any] = {
-        "latest_user_message": latest[:MAX_ROUTER_CHARS],
-        "recent_conversation": router_recent_conversation(state),
-        "conversation_memory": conversation_memory(state),
-        "cv_available": bool(extracted_documents),
-        "cv_text_available": any(
-            (doc.get("cv_text") or "").strip() for doc in documents
-        ),
-        "cv_review_available": review is not None,
-        "cv_review_summary": review_summary,
-        "cv_comparison_available": isinstance(cv_bucket(state).get("comparison"), dict),
-        "cv_count": len(documents),
-        "extracted_cv_count": len(extracted_documents),
-        "cv_filenames": [
-            str(doc.get("filename") or "cv.pdf") for doc in documents[:MAX_CV_DOCUMENTS]
-        ],
-        "cvs": [
-            {
-                "id": str(doc.get("id") or ""),
-                "filename": str(doc.get("filename") or "cv.pdf"),
-            }
-            for doc in documents[:MAX_CV_DOCUMENTS]
-            if str(doc.get("id") or "").strip()
-        ],
-        "jobs": job_catalog,
-        "matches": match_catalog,
-        "matches_available": bool(match_catalog),
-        "active_job_goal": active_job_goal(state),
-        "pending_match": pending_match_request(state),
-        "job_count": len(job_results) if isinstance(job_results, list) else 0,
-        "processed_job_count": (
-            len(job_results) if isinstance(job_results, list) else 0
-        ),
-        "completed_actions": completed_actions(state),
-        "remaining_action_budget": max(
-            0,
-            MAX_AGENT_ACTIONS - len(completed_actions(state)),
-        ),
-    }
-    try:
-        decision: RouteDecision = await router.ainvoke(
-            [
-                {"role": "system", "content": ROUTER_PROMPT},
-                {
-                    "role": "user",
-                    "content": "ROUTING DATA ONLY:\n"
-                    + json.dumps(context, ensure_ascii=False),
-                },
-            ]
-        )
-        needs_cv_text: bool = bool(decision.needs_cv_text) and any(
-            (doc.get("cv_text") or "").strip() for doc in documents
-        )
-        needs_cv_features: bool = bool(decision.needs_cv_features)
-        job_source: JobSource = decision.job_source
-        if decision.route == "extract_job":
-            job_source = "pasted"
-        selected_cv_id: str | None = None
-        if decision.route in {"review_cv", "match_jobs"} and decision.selected_cv_id:
-            candidate_cv_id: str = decision.selected_cv_id.strip()
-            if candidate_cv_id in known_cv_ids:
-                selected_cv_id = candidate_cv_id
-        selected_job_keys: list[str] | None = None
-        if decision.selected_job_keys:
-            valid_catalog_keys: set[str] = known_job_keys | known_match_keys
-            filtered_keys: list[str] = [
-                key.strip()
-                for key in decision.selected_job_keys
-                if isinstance(key, str) and key.strip() in valid_catalog_keys
-            ]
-            if filtered_keys:
-                selected_job_keys = filtered_keys
-        route: RouteName = decision.route
-        route_reason: str = decision.reason
-        if decision.is_follow_up and route in AGENT_ACTIONS:
-            route = "respond"
-            route_reason = "The latest message follows up on already-loaded results."
-            selected_cv_id = None
-        if route == "extract_cv" and not cvs_need_extraction(state):
-            route = "respond"
-            route_reason = (
-                "CV profiles are already extracted; answering from loaded state."
-            )
-            needs_cv_features = True
-        if route in CV_FEATURE_INTENTS:
-            needs_cv_features = True
-        selection: dict[str, Any] = {
-            "job_source": job_source,
-            "job_input_text": latest if job_source == "pasted" else None,
-            "score_requested": bool(decision.score_requested),
-            "assessment_requested": bool(decision.assessment_requested),
-            "show_score": bool(decision.score_requested),
-            "refresh_requested": decision.job_intent == "refresh_current_goal",
-            "match_detail_level": "summary",
-            "review_target_role": (
-                decision.review_target_role.strip()
-                if route == "review_cv" and decision.review_target_role
-                else None
-            ),
-            "review_mode": (
-                decision.review_mode if route == "review_cv" else "general"
-            ),
-            "review_focus": (
-                decision.review_focus.strip()
-                if route == "review_cv" and decision.review_focus
-                else None
-            ),
-            "review_mode_reason": (
-                decision.review_mode_reason.strip()
-                if route == "review_cv" and decision.review_mode_reason
-                else None
-            ),
-            "selected_cv_id": selected_cv_id
-            if route in {"review_cv", "match_jobs"}
-            else None,
-            "selected_job_keys": selected_job_keys,
-        }
-        jobs_update: dict[str, Any] = {
-            "scrape_request": decision.scrape_request.model_dump(exclude_none=True),
-        }
-        policy: dict[str, Any]
-        route, route_reason, selection, jobs_update, policy = apply_job_request_policy(
-            state,
-            decision=decision,
-            route=route,
-            route_reason=route_reason,
-            latest=latest,
-            selection=selection,
-            jobs_update=jobs_update,
-            needs_cv_features=needs_cv_features,
-        )
-        reused_cv: dict[str, Any]
-        route, route_reason, reused_cv, jobs_update = apply_action_reuse(
-            state,
-            route=route,
-            route_reason=route_reason,
-            selection=selection,
-            jobs_update=jobs_update,
-        )
-        if route == "respond" and reused_cv:
-            needs_cv_features = True
-        if route == "respond":
-            policy["planned_stages"] = []
-        else:
-            policy["planned_stages"] = planned_job_stages(
-                state,
-                route=route,
-                selection=selection,
-                jobs_update=jobs_update,
-            )
-        result: dict[str, Any] = {
-            "router": {
-                "route": route,
-                "route_reason": route_reason,
-                "needs_cv_text": needs_cv_text,
-                "needs_cv_features": needs_cv_features,
-                "job_intent": decision.job_intent,
-                "decision_confidence": decision.decision_confidence,
-                "semantic_intent": policy.get("semantic_intent") or "none",
-                "planned_stages": policy.get("planned_stages") or [],
-                "policy_reason": policy.get("policy_reason") or "",
-                "active_goal_id": policy.get("active_goal_id"),
-            },
-            "selection": selection,
-            "jobs": jobs_update,
-        }
-        if reused_cv:
-            result["cv"] = reused_cv
-        return result
-    except Exception as exc:
-        return {
-            "router": {
-                "route": "respond",
-                "route_reason": "Router failed; using the conversational fallback.",
-                "needs_cv_text": False,
-                "needs_cv_features": False,
-            },
-            "selection": default_selection_fields(),
-            "errors": state_errors(
-                state,
-                [f"Router failed: {type(exc).__name__}: {exc}"],
             ),
         }
 
@@ -5518,11 +5356,8 @@ def build_graph(
 ) -> Any:
     selected_model: ChatModel = chat_model or ChatModel.from_env()
 
-    async def goal_router(state: ConversationState) -> dict[str, Any]:
-        return await goal_router_node(state, selected_model)
-
-    async def target_resolver(state: ConversationState) -> dict[str, Any]:
-        return await target_resolver_node(state, selected_model)
+    async def request_router(state: ConversationState) -> dict[str, Any]:
+        return await request_router_node(state, selected_model)
 
     async def workflow_planner(state: ConversationState) -> dict[str, Any]:
         return await workflow_planner_node(state, selected_model)
@@ -5539,8 +5374,7 @@ def build_graph(
     builder: StateGraph = StateGraph(ConversationState, input_schema=StudioInput)
     builder.add_node("ingest_input", ingest_input)
     builder.add_node("summarize_conversation", summarize_node)
-    builder.add_node("goal_router", goal_router)
-    builder.add_node("target_resolver", target_resolver)
+    builder.add_node("request_router", request_router)
     builder.add_node("workflow_planner", workflow_planner)
     builder.add_node("validate_plan", validate_plan_node)
     builder.add_node("cv_subagent", build_cv_subagent_graph(selected_model))
@@ -5549,9 +5383,8 @@ def build_graph(
 
     builder.add_edge(START, "ingest_input")
     builder.add_edge("ingest_input", "summarize_conversation")
-    builder.add_edge("summarize_conversation", "goal_router")
-    builder.add_edge("goal_router", "target_resolver")
-    builder.add_edge("target_resolver", "workflow_planner")
+    builder.add_edge("summarize_conversation", "request_router")
+    builder.add_edge("request_router", "workflow_planner")
     builder.add_edge("workflow_planner", "validate_plan")
     builder.add_conditional_edges(
         "validate_plan",
