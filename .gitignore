@@ -10,21 +10,58 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 .coverage
+.coverage.*
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.htmlcov/
+.hypothesis/
+.pytest/
+.nox/
+.tox/
 
 # [Development tools]
 .cursor/
+.vscode/
+.idea/
+
+# [OS and editor temporary files]
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
 
 # [Generated and local files]
 logs/
 notebooks/
 tmp/
 *.log
+*.egg-info/
+dist/
+build/
+site/
+*.egg
 
 # [Tools]
 .code-review-graph/
 .superpowers/
 docs/superpowers/
 .langgraph_api/
+.langgraph-selected*
+.codex/
+.agents/
 graphify-out/
+.githooks/
+hooks/
+.graphify_detect.json
+.graphify_extract.json
+.graphify_ast.json
+.graphify_semantic.json
+.graphify_analysis.json
+.graphify_labels.json
+.graphify_cached.json
+.graphify_uncached.txt
+.graphify_transcripts.json
+.graphify_chunk_*.json
+AGENTS.md
