@@ -5,7 +5,7 @@ import os
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import HTTPException, Security
+from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config.const.api_res import (
@@ -32,10 +32,10 @@ def require_api_token(
         Security(_bearer_scheme),
     ],
 ) -> None:
-    configured_token = _configured_token()
+    configured_token: str = _configured_token()
     if not configured_token:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=API_AUTH_NOT_CONFIGURED,
         )
 
@@ -45,7 +45,7 @@ def require_api_token(
         or not hmac.compare_digest(credentials.credentials, configured_token)
     ):
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail=INVALID_API_AUTH_TOKEN,
             headers={"WWW-Authenticate": "Bearer"},
         )

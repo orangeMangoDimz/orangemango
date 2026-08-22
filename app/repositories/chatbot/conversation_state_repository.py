@@ -23,17 +23,17 @@ class ConversationStateRepository:
         self._messages = messages
 
     def cv_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = state.get("cv")
+        value: Any = state.get("cv")
         return dict(value) if isinstance(value, dict) else {}
 
 
     def routing_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = state.get("routing")
+        value: Any = state.get("routing")
         return dict(value) if isinstance(value, dict) else {}
 
 
     def request_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = self.routing_bucket(state).get("request")
+        value: Any = self.routing_bucket(state).get("request")
         return dict(value) if isinstance(value, dict) else {}
 
     def request_values(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +134,7 @@ class ConversationStateRepository:
 
 
     def targets_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = self.routing_bucket(state).get("targets")
+        value: Any = self.routing_bucket(state).get("targets")
         if isinstance(value, dict):
             return self.normalize_targets_state(value)
         value = state.get("targets")
@@ -145,7 +145,7 @@ class ConversationStateRepository:
 
 
     def plan_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = self.routing_bucket(state).get("plan")
+        value: Any = self.routing_bucket(state).get("plan")
         if isinstance(value, dict):
             return dict(value)
         value = state.get("plan")
@@ -194,12 +194,12 @@ class ConversationStateRepository:
 
 
     def jobs_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = state.get("jobs")
+        value: Any = state.get("jobs")
         return dict(value) if isinstance(value, dict) else {}
 
 
     def action_results_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = state.get("action_results")
+        value: Any = state.get("action_results")
         return dict(value) if isinstance(value, dict) else {}
 
 
@@ -213,7 +213,7 @@ class ConversationStateRepository:
 
 
     def execution_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value = state.get("execution")
+        value: Any = state.get("execution")
         return dict(value) if isinstance(value, dict) else {}
 
 

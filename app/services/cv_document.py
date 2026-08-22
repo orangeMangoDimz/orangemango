@@ -21,7 +21,7 @@ class CvInputError(ValueError):
 
 def validate_extracted_text(value: str | None) -> str:
     """Return normalized extracted text or reject an empty value."""
-    normalized = (value or "").strip()
+    normalized: str = (value or "").strip()
     if not normalized:
         raise CvInputError(CV_EXTRACTED_TEXT_EMPTY)
     return normalized
@@ -34,9 +34,9 @@ def validate_pdf_upload(
     content: bytes,
 ) -> str:
     """Validate an uploaded PDF and return its safe original filename."""
-    raw_filename = filename or ""
-    normalized_filename = raw_filename.replace("\\", "/")
-    safe_name = Path(normalized_filename).name
+    raw_filename: str = filename or ""
+    normalized_filename: str = raw_filename.replace("\\", "/")
+    safe_name: str = Path(normalized_filename).name
 
     if (
         not raw_filename
@@ -71,8 +71,10 @@ def validate_pdf_upload(
 def extract_pdf_text(content: bytes) -> str:
     """Extract and normalize text from validated PDF bytes."""
     try:
-        reader = PdfReader(BytesIO(content))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        reader: PdfReader = PdfReader(BytesIO(content))
+        text: str = "\n".join(
+            page.extract_text() or "" for page in reader.pages
+        ).strip()
     except Exception as exc:
         raise CvInputError(CV_FILE_INVALID) from exc
 

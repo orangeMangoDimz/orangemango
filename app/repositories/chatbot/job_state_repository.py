@@ -34,7 +34,9 @@ class JobStateRepository:
         ]
         raw_keys: Any = self._state.selection_bucket(state).get("selected_job_keys")
         if isinstance(raw_keys, list) and raw_keys:
-            wanted: set[str] = {str(key).strip() for key in raw_keys if str(key).strip()}
+            wanted: set[str] = {
+                str(key).strip() for key in raw_keys if str(key).strip()
+            }
             if wanted:
                 selected: list[dict[str, Any]] = []
                 for index, item in enumerate(job_results):
