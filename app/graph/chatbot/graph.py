@@ -1,31 +1,3 @@
-"""Conversational CV and job-search graph.
-
-Accepts one or more PDFs via Studio chat file blocks on the user message, or via
-graph-mode pending_cv_upload / pending_cv_uploads::
-
-    {
-        "messages": [
-            {"role": "user", "content": "Compare these CVs"}
-        ],
-        "pending_cv_uploads": [
-            {
-                "filename": "cv_a.pdf",
-                "content_base64": "<base64-encoded PDF bytes>"
-            },
-            {
-                "filename": "cv_b.pdf",
-                "content_base64": "<base64-encoded PDF bytes>"
-            }
-        ]
-    }
-
-File blocks are removed from persisted messages so Studio chat does not hit
-the empty file-data render error. PDF bytes are decoded in memory only.
-
-Imports must stay absolute: LangGraph Studio loads this file by path under a
-synthetic module name, so relative imports would not resolve.
-"""
-
 from __future__ import annotations
 
 from typing import Any
