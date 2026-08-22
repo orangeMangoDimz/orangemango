@@ -45,7 +45,7 @@ class ChatThreadNotFoundError(LookupError):
 
 
 def _bounded_text(value: Any) -> str:
-    text = str(value)
+    text: str = str(value)
     if len(text) <= _MAX_SERIALIZED_TEXT:
         return text
     return text[: _MAX_SERIALIZED_TEXT - 1].rstrip() + "…"
@@ -79,7 +79,7 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
 
 
 def _chunk_text(chunk: Any) -> str:
-    content = getattr(chunk, "content", "")
+    content: Any = getattr(chunk, "content", "")
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -122,9 +122,9 @@ class ChatService:
 
     @classmethod
     def from_env(cls) -> ChatService:
-        model = ChatModel.from_env()
-        database = Database.from_env()
-        repository = ChatRepository(
+        model: ChatModel = ChatModel.from_env()
+        database: Database = Database.from_env()
+        repository: ChatRepository = ChatRepository(
             graph=None,
             session_factory=database.session_factory,
         )
@@ -156,22 +156,26 @@ class ChatService:
             raise ChatPersistenceError("Chat model is not configured")
 
         async with self._startup_lock:
+            # Prevent concurrent startup calls from creating duplicate graphs.
             if self._repository.graph is not None:
                 return
 
-            stack = AsyncExitStack()
+            stack: AsyncExitStack = AsyncExitStack()
             try:
-                checkpointer = await stack.enter_async_context(
+                # Open and prepare the database-backed checkpointer.
+                checkpointer: AsyncPostgresSaver = await stack.enter_async_context(
                     AsyncPostgresSaver.from_conn_string(postgres_checkpointer_url())
                 )
                 await checkpointer.setup()
 
+                # Build the graph with durable conversation history.
                 self._repository.graph = build_graph(
                     checkpointer=checkpointer,
                     chat_model=self._chat_model,
                 )
                 self._checkpointer_stack = stack
             except Exception as exc:
+                # Release resources if startup fails partway through.
                 await stack.aclose()
                 raise ChatPersistenceError(
                     "Unable to initialize durable chat history"
@@ -184,7 +188,7 @@ class ChatService:
     ) -> AcceptedMessageResponse:
         await self.startup()
         try:
-            request_id = await self._repository.begin_run(
+            request_id: UUID = await self._repository.begin_run(
                 thread_id,
                 message=message,
                 provider=self._provider,
@@ -194,7 +198,9 @@ class ChatService:
             raise ChatThreadBusyError(thread_id) from exc
 
         try:
-            task = asyncio.create_task(self._run_graph(thread_id, message, request_id))
+            task: asyncio.Task[None] = asyncio.create_task(
+                self._run_graph(thread_id, message, request_id)
+            )
         except BaseException:
             await self._repository.end_run(thread_id)
             try:
@@ -249,15 +255,17 @@ class ChatService:
         request_id: UUID,
     ) -> None:
         response_parts: list[str] = []
-        response_persisted = False
-        started_at = monotonic()
+        response_persisted: bool = False
+        started_at: float = monotonic()
         try:
             await self._repository.mark_processing(request_id)
-            config = {"configurable": {"thread_id": thread_id}}
-            graph_input = {
+            config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+            graph_input: dict[str, Any] = {
                 "messages": [{"role": "user", "content": message}],
             }
-            cv_context = await self._load_thread_cv_context(thread_id)
+            cv_context: dict[str, Any] | None = await self._load_thread_cv_context(
+                thread_id
+            )
             if cv_context is not None:
                 graph_input.update(cv_context)
             else:
@@ -305,7 +313,7 @@ class ChatService:
                 if metadata.get("langgraph_node") != "respond":
                     continue
 
-                content = _chunk_text(chunk)
+                content: str = _chunk_text(chunk)
                 if content:
                     response_parts.append(content)
                     await self._repository.publish(
@@ -399,7 +407,7 @@ class ChatService:
                 )
         finally:
             await self._repository.end_run(thread_id)
-            current_task = asyncio.current_task()
+            current_task: asyncio.Task[None] | None = asyncio.current_task()
             if self._tasks.get(thread_id) is current_task:
                 self._tasks.pop(thread_id, None)
 
