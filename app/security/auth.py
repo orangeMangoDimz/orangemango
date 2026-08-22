@@ -14,7 +14,6 @@ from app.config.const.api_res import (
     INVALID_API_AUTH_TOKEN,
 )
 
-
 _bearer_scheme = HTTPBearer(
     auto_error=False,
     scheme_name="BearerAuth",

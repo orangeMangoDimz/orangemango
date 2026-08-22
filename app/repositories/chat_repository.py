@@ -14,14 +14,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config.const.chat import MAX_EVENT_HISTORY
+from app.db.models import ChatMessage as ChatMessageRecord
+from app.db.models import ChatRequest as ChatRequestRecord
+from app.db.models import ChatResponse as ChatResponseRecord
 from app.db.models import (
-    ChatMessage as ChatMessageRecord,
-    ChatRequest as ChatRequestRecord,
-    ChatResponse as ChatResponseRecord,
     ChatThread,
-    CvExtraction as CvExtractionRecord,
 )
-
+from app.db.models import CvExtraction as CvExtractionRecord
 
 EventType = Literal["state", "message", "cv_extraction", "error", "done"]
 

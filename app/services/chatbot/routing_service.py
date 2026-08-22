@@ -7,10 +7,10 @@ from typing import Any
 
 from app.config.const.chatbot import (
     MAX_AGENT_ACTIONS,
+    MAX_ROUTER_CHARS,
     ROUTE_MATCH_JOBS,
     ROUTE_RESPOND,
     ROUTE_SEARCH_JOBS,
-    MAX_ROUTER_CHARS,
 )
 from app.config.const.chatbot_errors import (
     ERROR_REQUEST_ROUTER_FAILED_PREFIX,

@@ -2,9 +2,8 @@
 
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "0005_schema_comments"
 down_revision: Union[str, None] = "0004_cv_documents_extract"

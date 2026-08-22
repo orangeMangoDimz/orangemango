@@ -10,8 +10,8 @@ from typing import Any
 
 from app.config.const.chatbot import (
     AGENT_ACTIONS,
-    NODE_SCRAPE_JOBS,
     MAX_AGENT_ACTIONS,
+    NODE_SCRAPE_JOBS,
     ROUTE_COMPARE_CVS,
     ROUTE_EXTRACT_CV,
     ROUTE_EXTRACT_JOB,
@@ -45,7 +45,13 @@ from app.config.const.chatbot_errors import (
     VALIDATION_ACCEPTED,
     VALIDATION_REJECTED,
 )
-from app.models.chatbot.literals import JobResponse, JobSource, JobTask, RoleSource, RouteName
+from app.models.chatbot.literals import (
+    JobResponse,
+    JobSource,
+    JobTask,
+    RoleSource,
+    RouteName,
+)
 from app.models.chatbot.schemas import RouteDecision, ScrapeRequest
 from app.models.chatbot.state import ConversationState
 from app.repositories.chatbot.catalog_repository import RoutingCatalogRepository

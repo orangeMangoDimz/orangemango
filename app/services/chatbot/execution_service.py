@@ -27,7 +27,6 @@ from app.config.const.chatbot import (
 )
 from app.config.const.chatbot_errors import (
     ERROR_JOB_SCRAPING_FAILED,
-    STATUS_UNAVAILABLE,
     REASON_ACTION_COMPLETED,
     REASON_ACTION_FAILED,
     REASON_CV_FEATURES_READY,
@@ -35,6 +34,7 @@ from app.config.const.chatbot_errors import (
     REASON_PLAN_VALIDATED,
     REASON_REUSED_EXISTING_RESULT,
     REASON_SEARCH_RESULTS_READY,
+    STATUS_UNAVAILABLE,
 )
 from app.models.chatbot.literals import AgentAction, ExecutionStatus
 from app.models.chatbot.state import (

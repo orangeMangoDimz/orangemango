@@ -6,7 +6,6 @@ from sqlalchemy import create_engine, pool
 from app.db.models import SQLModel
 from app.db.session import sync_database_url
 
-
 config = context.config
 target_metadata = SQLModel.metadata
 

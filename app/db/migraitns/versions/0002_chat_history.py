@@ -2,10 +2,9 @@
 
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
-
 
 revision: str = "0002_chat_history"
 down_revision: Union[str, None] = "0001_initial_chat_persistence"

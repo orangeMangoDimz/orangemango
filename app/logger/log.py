@@ -17,7 +17,6 @@ from starlette.requests import Request
 from app.db.models import AppErrorLog
 from app.db.session import DatabaseConfigurationError, sync_database_url
 
-
 _CONFIGURED = False
 _ENGINE: Engine | None = None
 _ENGINE_LOCK = threading.Lock()
