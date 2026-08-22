@@ -40,6 +40,7 @@ def add_chat_messages(
         sanitized_right.append(message if sanitized is None else sanitized)
     return add_messages(left or [], sanitized_right)
 
+
 def merge_maps(
     left: dict[str, Any] | None, right: dict[str, Any] | None
 ) -> dict[str, Any]:

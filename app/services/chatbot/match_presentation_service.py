@@ -27,12 +27,10 @@ class MatchPresentationService:
         value: Any = item.get("score")
         return dict(value) if isinstance(value, dict) else {}
 
-
     @staticmethod
     def _card(item: dict[str, Any]) -> dict[str, Any]:
         value: Any = item.get("job_card")
         return dict(value) if isinstance(value, dict) else {}
-
 
     @staticmethod
     def _dimensions(score: dict[str, Any]) -> list[dict[str, Any]]:
@@ -41,7 +39,6 @@ class MatchPresentationService:
             for entry in (score.get("dimensions") or [])
             if isinstance(entry, dict)
         ]
-
 
     @staticmethod
     def _dimension_evidence(score: dict[str, Any]) -> list[dict[str, Any]]:
@@ -60,7 +57,6 @@ class MatchPresentationService:
                 }
             )
         return evidence
-
 
     @staticmethod
     def _has_major_gap(score: dict[str, Any]) -> bool:
@@ -83,11 +79,12 @@ class MatchPresentationService:
                 return True
         return False
 
-
     @staticmethod
     def _assessment_key(item: dict[str, Any]) -> str:
         score: dict[str, Any] = MatchPresentationService._score(item)
-        fit_verdict: str = str(score.get("fit_verdict") or "uncertain").strip().casefold()
+        fit_verdict: str = (
+            str(score.get("fit_verdict") or "uncertain").strip().casefold()
+        )
         dimensions: list[dict[str, Any]] = MatchPresentationService._dimensions(score)
         has_supporting_evidence: bool = any(
             str(entry.get("status") or "").strip().casefold() in {"matched", "partial"}
@@ -105,7 +102,6 @@ class MatchPresentationService:
             return "possible"
         return "insufficient"
 
-
     @staticmethod
     def _normalized_score(item: dict[str, Any]) -> float | None:
         score: dict[str, Any] = MatchPresentationService._score(item)
@@ -115,10 +111,11 @@ class MatchPresentationService:
         except (TypeError, ValueError):
             return None
 
-
     @staticmethod
     def _best_assessment_for_group(rows: list[dict[str, Any]]) -> str:
-        keys: list[str] = [MatchPresentationService._assessment_key(item) for item in rows]
+        keys: list[str] = [
+            MatchPresentationService._assessment_key(item) for item in rows
+        ]
         if "likely" in keys:
             return "likely"
         if "possible" in keys:
@@ -126,7 +123,6 @@ class MatchPresentationService:
         if "unlikely" in keys:
             return "unlikely"
         return "insufficient"
-
 
     @staticmethod
     def _match_identity(item: dict[str, Any], index: int) -> str:
@@ -137,15 +133,15 @@ class MatchPresentationService:
         fallback_url: str = str(card.get("url") or "").strip()
         return fallback_url or f"match:{index}"
 
-
     @staticmethod
-    def _grouped_match_items(matches: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    def _grouped_match_items(
+        matches: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for index, item in enumerate(matches):
             identity: str = MatchPresentationService._match_identity(item, index)
             grouped.setdefault(identity, []).append(item)
         return list(grouped.values())
-
 
     @staticmethod
     def _project_row(
@@ -156,7 +152,9 @@ class MatchPresentationService:
     ) -> dict[str, Any]:
         score: dict[str, Any] = MatchPresentationService._score(item)
         card: dict[str, Any] = MatchPresentationService._card(item)
-        dimensions: list[dict[str, Any]] = MatchPresentationService._dimension_evidence(score)
+        dimensions: list[dict[str, Any]] = MatchPresentationService._dimension_evidence(
+            score
+        )
         assessment_key: str = MatchPresentationService._assessment_key(item)
         row: dict[str, Any] = {
             "title": card.get("title") or JOB_CARD_UNTITLED,
@@ -170,9 +168,10 @@ class MatchPresentationService:
             row["score"] = MatchPresentationService._normalized_score(item)
         if detail_level == "full":
             row["evidence"] = dimensions[:MAX_PUBLIC_DETAILS]
-            row["reason_code"] = str(score.get("verdict_reason_code") or "").strip() or None
+            row["reason_code"] = (
+                str(score.get("verdict_reason_code") or "").strip() or None
+            )
         return row
-
 
     @staticmethod
     def _project_group(
@@ -184,7 +183,9 @@ class MatchPresentationService:
         if not rows:
             return "insufficient", [], {}, None
         projected: list[dict[str, Any]] = [
-            MatchPresentationService._project_row(row, show_score=show_score, detail_level=detail_level)
+            MatchPresentationService._project_row(
+                row, show_score=show_score, detail_level=detail_level
+            )
             for row in rows
         ]
         key: str = MatchPresentationService._best_assessment_for_group(rows)
@@ -209,7 +210,6 @@ class MatchPresentationService:
             representative["cv_count"] = len(rows)
         return key, projected, representative, max_score
 
-
     @staticmethod
     def build_public_match_summary(
         matches: list[dict[str, Any]],
@@ -220,7 +220,9 @@ class MatchPresentationService:
         del show_score, detail_level
         counts: dict[str, int] = {key: 0 for key in COUNT_KEYS}
         for rows in MatchPresentationService._grouped_match_items(matches):
-            key, _, _, _ = MatchPresentationService._project_group(rows, show_score=False, detail_level="summary")
+            key, _, _, _ = MatchPresentationService._project_group(
+                rows, show_score=False, detail_level="summary"
+            )
             if key in counts:
                 counts[key] += 1
         total: int = sum(counts.values())
@@ -247,7 +249,6 @@ class MatchPresentationService:
             "total": total,
         }
 
-
     @staticmethod
     def build_public_match_recommendation(
         matches: list[dict[str, Any]],
@@ -256,7 +257,9 @@ class MatchPresentationService:
         detail_level: DetailLevel = "summary",
     ) -> dict[str, Any]:
         ranked: list[dict[str, Any]] = []
-        for order, rows in enumerate(MatchPresentationService._grouped_match_items(matches)):
+        for order, rows in enumerate(
+            MatchPresentationService._grouped_match_items(matches)
+        ):
             key, _, representative, max_score = MatchPresentationService._project_group(
                 rows,
                 show_score=show_score,
@@ -290,7 +293,6 @@ class MatchPresentationService:
             payload["score"] = chosen["score"]
         return payload
 
-
     @staticmethod
     def build_public_match_selected(
         selected: list[dict[str, Any]],
@@ -316,7 +318,6 @@ class MatchPresentationService:
         if show_score and isinstance(max_score, (int, float)):
             payload["score"] = max_score
         return payload
-
 
     @staticmethod
     def build_public_match_assessment(

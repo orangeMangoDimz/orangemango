@@ -40,7 +40,9 @@ class RoutingCatalogRepository:
         ]
         jobs: list[dict[str, Any]] = []
         job_keys: set[str] = set()
-        for index, item in enumerate(self._state.jobs_bucket(state).get("results") or []):
+        for index, item in enumerate(
+            self._state.jobs_bucket(state).get("results") or []
+        ):
             if not isinstance(item, dict):
                 continue
             key: str = JobKeyUtils.job_selection_key(item, index)
@@ -78,7 +80,6 @@ class RoutingCatalogRepository:
             "job_keys": job_keys,
             "match_keys": match_keys,
         }
-
 
     def routing_cv_profiles(self, state: ConversationState) -> list[dict[str, Any]]:
         profiles: list[dict[str, Any]] = []

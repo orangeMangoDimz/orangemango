@@ -73,7 +73,8 @@ class ExecutionService:
         self._reuse = reuse
         self._projection = projection
 
-    def _new_action_errors(self,
+    def _new_action_errors(
+        self,
         state: ConversationState,
         update: dict[str, Any],
     ) -> list[str]:
@@ -86,19 +87,26 @@ class ExecutionService:
             if str(item) and str(item) not in previous
         ]
 
-
-    def _execution_source_node(self,
+    def _execution_source_node(
+        self,
         state: ConversationState,
         action: AgentAction,
     ) -> tuple[str, str, str]:
         actions: set[str] = set(self._state.completed_actions(state))
-        if action in {ROUTE_REVIEW_CV, ROUTE_COMPARE_CVS} and ROUTE_EXTRACT_CV in actions:
+        if (
+            action in {ROUTE_REVIEW_CV, ROUTE_COMPARE_CVS}
+            and ROUTE_EXTRACT_CV in actions
+        ):
             return GRAPH_CV_SUBAGENT, ROUTE_EXTRACT_CV, REASON_CV_FEATURES_READY
         if action == ROUTE_MATCH_JOBS:
             if ROUTE_SEARCH_JOBS in actions:
                 return GRAPH_JOB_SUBAGENT, NODE_SCRAPE_JOBS, REASON_SEARCH_RESULTS_READY
             if ROUTE_EXTRACT_JOB in actions:
-                return GRAPH_JOB_SUBAGENT, NODE_EXTRACT_PASTED_JOB, REASON_JOB_EXTRACTION_READY
+                return (
+                    GRAPH_JOB_SUBAGENT,
+                    NODE_EXTRACT_PASTED_JOB,
+                    REASON_JOB_EXTRACTION_READY,
+                )
         plan: dict[str, Any] = self._state.plan_bucket(state)
         return (
             GRAPH_CHATBOT,
@@ -106,8 +114,8 @@ class ExecutionService:
             str(plan.get("reason") or REASON_PLAN_VALIDATED),
         )
 
-
-    def _execution_args(self,
+    def _execution_args(
+        self,
         action: AgentAction,
         state: ConversationState,
     ) -> dict[str, Any]:
@@ -123,8 +131,7 @@ class ExecutionService:
                 return {"cv_ids": ids}
             return {
                 "cv_filenames": [
-                    str(document.get("filename") or "cv.pdf")
-                    for document in documents
+                    str(document.get("filename") or "cv.pdf") for document in documents
                 ]
             }
         if action == ROUTE_REVIEW_CV:
@@ -137,7 +144,9 @@ class ExecutionService:
                 args["focus"] = request["review_focus"]
             if request.get("review_target_role"):
                 args["target_role"] = request["review_target_role"]
-            return {key: value for key, value in args.items() if value not in (None, "")}
+            return {
+                key: value for key, value in args.items() if value not in (None, "")
+            }
         if action == ROUTE_COMPARE_CVS:
             return {
                 "cv_ids": [
@@ -176,8 +185,8 @@ class ExecutionService:
             return args
         return {}
 
-
-    def _execution_context(self,
+    def _execution_context(
+        self,
         action: AgentAction,
         state: ConversationState,
     ) -> ExecutionContextState:
@@ -203,13 +212,11 @@ class ExecutionService:
                     "field": "jobs.active_job_goal.role_constraints",
                 }
         else:
-            context["source_reference"] = {
-                "field": "routing.request.role.evidence"
-            }
+            context["source_reference"] = {"field": "routing.request.role.evidence"}
         return context
 
-
-    def _execution_result(self,
+    def _execution_result(
+        self,
         action: AgentAction,
         state: ConversationState,
         update: dict[str, Any],
@@ -236,7 +243,10 @@ class ExecutionService:
                 else 0,
                 "errors": errors,
             }
-            failed = not isinstance(review, dict) or review.get("status") == STATUS_UNAVAILABLE
+            failed = (
+                not isinstance(review, dict)
+                or review.get("status") == STATUS_UNAVAILABLE
+            )
         elif action == ROUTE_COMPARE_CVS:
             comparison: Any = (update.get("cv") or {}).get("comparison")
             result = {
@@ -247,7 +257,9 @@ class ExecutionService:
             }
             failed = not isinstance(comparison, dict)
         elif action == ROUTE_EXTRACT_JOB:
-            payload: dict[str, Any] = self._projection.slim_extract_job_result(jobs_update, state)
+            payload: dict[str, Any] = self._projection.slim_extract_job_result(
+                jobs_update, state
+            )
             result = {
                 "job_count": payload.get("job_count", 0),
                 "validation_status": payload.get("validation_status"),
@@ -265,7 +277,9 @@ class ExecutionService:
             failed = any(item.startswith(ERROR_JOB_SCRAPING_FAILED) for item in errors)
         else:
             matches: list[Any] = [
-                item for item in (jobs_update.get("matches") or []) if isinstance(item, dict)
+                item
+                for item in (jobs_update.get("matches") or [])
+                if isinstance(item, dict)
             ]
             result = {"match_count": len(matches), "errors": errors}
             failed = bool(errors)
@@ -273,17 +287,23 @@ class ExecutionService:
         error: str | None = errors[0] if failed and errors else None
         return status, result, error
 
-
-    def build_execution_step(self,
+    def build_execution_step(
+        self,
         state: ConversationState,
         action: AgentAction,
         update: dict[str, Any],
         merged_state: ConversationState,
     ) -> ExecutionStepState:
-        source_graph, source_node, source_reason = self._execution_source_node(state, action)
+        source_graph, source_node, source_reason = self._execution_source_node(
+            state, action
+        )
         destination_graph, destination_node = EXECUTION_DESTINATIONS[action]
-        status, result, error = self._execution_result(action, state, update, merged_state)
-        route: Any = self._state.router_bucket(state).get("route") or self._state.plan_bucket(state).get("action")
+        status, result, error = self._execution_result(
+            action, state, update, merged_state
+        )
+        route: Any = self._state.router_bucket(state).get(
+            "route"
+        ) or self._state.plan_bucket(state).get("action")
         from_node: ExecutionFromNodeState = {
             "graph": source_graph,
             "node": source_node,
@@ -297,10 +317,14 @@ class ExecutionService:
         to_node: ExecutionToNodeState = {
             "graph": destination_graph,
             "node": destination_node,
-            "uses": list(EXECUTION_NODE_USES.get((destination_graph, destination_node), [])),
+            "uses": list(
+                EXECUTION_NODE_USES.get((destination_graph, destination_node), [])
+            ),
             "note": {
                 "summary": f"Executed {action}.",
-                "reason": REASON_ACTION_FAILED if status == "failed" else REASON_ACTION_COMPLETED,
+                "reason": REASON_ACTION_FAILED
+                if status == "failed"
+                else REASON_ACTION_COMPLETED,
             },
             "args": self._execution_args(action, state),
             "result": result,
@@ -315,8 +339,8 @@ class ExecutionService:
             "error": error,
         }
 
-
-    def build_skipped_execution_step(self,
+    def build_skipped_execution_step(
+        self,
         state: ConversationState,
         action: AgentAction,
     ) -> ExecutionStepState:
@@ -341,17 +365,23 @@ class ExecutionService:
                 "uses": list(EXECUTION_NODE_USES[(GRAPH_CHATBOT, NODE_VALIDATE_PLAN)]),
                 "note": {
                     "summary": "Selected the next executable action.",
-                    "reason": str(self._state.plan_bucket(state).get("reason") or REASON_PLAN_VALIDATED),
+                    "reason": str(
+                        self._state.plan_bucket(state).get("reason")
+                        or REASON_PLAN_VALIDATED
+                    ),
                 },
                 "output": {
-                    "route": self._state.router_bucket(state).get("route") or ROUTE_RESPOND,
+                    "route": self._state.router_bucket(state).get("route")
+                    or ROUTE_RESPOND,
                     "next_action": action,
                 },
             },
             "to": {
                 "graph": destination_graph,
                 "node": destination_node,
-                "uses": list(EXECUTION_NODE_USES[(destination_graph, destination_node)]),
+                "uses": list(
+                    EXECUTION_NODE_USES[(destination_graph, destination_node)]
+                ),
                 "note": {
                     "summary": f"Skipped {action}.",
                     "reason": REASON_REUSED_EXISTING_RESULT,
@@ -363,8 +393,8 @@ class ExecutionService:
             "error": None,
         }
 
-
-    def record_completed_action(self,
+    def record_completed_action(
+        self,
         state: ConversationState,
         action: AgentAction,
         update: dict[str, Any],
@@ -390,10 +420,12 @@ class ExecutionService:
             if key not in {"router", "plan", "routing"}
         }
         if emit_result and action in USER_FACING_ACTIONS:
-            payload: dict[str, Any] | None = self._projection.slim_action_result(action, update, state)
+            payload: dict[str, Any] | None = self._projection.slim_action_result(
+                action, update, state
+            )
             if payload is not None:
-                result_messages: list[AnyMessage] = self._projection.build_action_result_messages(
-                    action, payload
+                result_messages: list[AnyMessage] = (
+                    self._projection.build_action_result_messages(action, payload)
                 )
                 existing_messages: Any = rest.get("messages")
                 if isinstance(existing_messages, list) and existing_messages:
@@ -419,7 +451,10 @@ class ExecutionService:
                 update["routing"],
             )
         if isinstance(update.get("targets"), dict):
-            merged_state["targets"] = {**self._state.targets_bucket(state), **update["targets"]}
+            merged_state["targets"] = {
+                **self._state.targets_bucket(state),
+                **update["targets"],
+            }
         if isinstance(update.get("selection"), dict):
             merged_state["targets"] = {
                 **self._state.targets_bucket(state),
@@ -434,7 +469,9 @@ class ExecutionService:
         recorded["execution"] = {
             "steps": [*self._state.execution_steps(state), step],
         }
-        snapshot: dict[str, Any] | None = self._reuse.reusable_action_snapshot(action, update, state)
+        snapshot: dict[str, Any] | None = self._reuse.reusable_action_snapshot(
+            action, update, state
+        )
         if snapshot is None:
             return recorded
         fingerprint: str | None = self._reuse.action_fingerprint(action, merged_state)

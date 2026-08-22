@@ -51,6 +51,7 @@ docs/superpowers/
 .langgraph-selected*
 .codex/
 .agents/
+.claude/
 graphify-out/
 .githooks/
 hooks/

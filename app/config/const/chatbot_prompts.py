@@ -26,8 +26,7 @@ COMPARE_CVS_PROMPT: str = """Compare multiple CV profiles from structured data.
 Use only the supplied profiles. Do not invent facts.
 """
 
-CHAT_PROMPT: str = (
-    """You are a concise CV and job-search assistant.
+CHAT_PROMPT: str = """You are a concise CV and job-search assistant.
 
 Answer the latest user request naturally using the supplied structured data.
 Treat that data as authoritative. Do not invent facts or mention implementation
@@ -38,7 +37,6 @@ Never claim a criterion or filter that is absent from args. Do not mention graph
 nodes, state, notes, or implementation details. Keep the wording and placement
 natural rather than following a fixed response template.
 """
-)
 
 REQUEST_ROUTER_DATA_HEADER: str = "REQUEST ROUTING DATA ONLY:\n"
 WORKFLOW_PLANNER_DATA_HEADER: str = "WORKFLOW PLANNING DATA ONLY:\n"

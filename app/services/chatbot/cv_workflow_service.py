@@ -58,7 +58,6 @@ class CvWorkflowService:
             ),
         }
 
-
     async def run_cv_subagent(self, state: ConversationState) -> dict[str, Any]:
         documents: list[dict[str, Any]] = self._cvs.state_cv_documents(state)
         if not documents:
@@ -88,9 +87,7 @@ class CvWorkflowService:
                             "cv_features": None,
                         }
                     )
-                    errors.append(
-                        f"{ERROR_CV_EXTRACTION_INVALID}{filename}"
-                    )
+                    errors.append(f"{ERROR_CV_EXTRACTION_INVALID}{filename}")
                     continue
                 updated_documents.append(
                     {
@@ -107,7 +104,9 @@ class CvWorkflowService:
                         "cv_features": None,
                     }
                 )
-                errors.append(f"{ERROR_CV_EXTRACTION_FAILED}{filename}:{type(exc).__name__}")
+                errors.append(
+                    f"{ERROR_CV_EXTRACTION_FAILED}{filename}:{type(exc).__name__}"
+                )
 
         update: dict[str, Any] = {
             "cv": {
@@ -119,10 +118,8 @@ class CvWorkflowService:
             update["errors"] = self._state.state_errors(state, errors)
         return update
 
-
     async def handle_missing_cv(self, state: ConversationState) -> dict[str, Any]:
         return self.missing_cv_update(state)
-
 
     async def run_cv_review(self, state: ConversationState) -> dict[str, Any]:
         documents: list[dict[str, Any]] = self._cvs.state_cv_documents(state)
@@ -177,7 +174,9 @@ class CvWorkflowService:
                 "criteria": [],
                 "feedback": [],
                 "deterministic_signals": {},
-                "validation_errors": [f"{ERROR_CV_REVIEW_FAILED_PREFIX}{type(exc).__name__}"],
+                "validation_errors": [
+                    f"{ERROR_CV_REVIEW_FAILED_PREFIX}{type(exc).__name__}"
+                ],
             }
             updated_documents: list[dict[str, Any]] = [
                 {**doc, "cv_review": review}

@@ -38,7 +38,6 @@ class UploadParser:
         except (ValueError, binascii.Error) as exc:
             raise ValueError("Uploaded CV content is not valid base64") from exc
 
-
     @staticmethod
     def _block_as_dict(block: Any) -> dict[str, Any] | None:
         if isinstance(block, dict):
@@ -51,21 +50,20 @@ class UploadParser:
             return dumped if isinstance(dumped, dict) else None
         return None
 
-
     @staticmethod
     def _is_file_block(block: dict[str, Any]) -> bool:
         block_type: str = str(block.get("type") or "").casefold()
         if block_type == "file":
             return True
-        mime: str = str(block.get("mime_type") or block.get("mimeType") or "").casefold()
+        mime: str = str(
+            block.get("mime_type") or block.get("mimeType") or ""
+        ).casefold()
         return mime == "application/pdf"
-
 
     @staticmethod
     def _nested_file_dict(block: dict[str, Any]) -> dict[str, Any] | None:
         nested: Any = block.get("file")
         return nested if isinstance(nested, dict) else None
-
 
     @staticmethod
     def _file_block_filename(block: dict[str, Any]) -> str:
@@ -98,7 +96,6 @@ class UploadParser:
             or "cv.pdf"
         )
 
-
     @staticmethod
     def _payload_from_mapping(mapping: dict[str, Any]) -> Any:
         for key in (
@@ -117,7 +114,6 @@ class UploadParser:
             return UploadParser._payload_from_mapping(source)
         return None
 
-
     @staticmethod
     def _file_block_payload(block: dict[str, Any]) -> Any:
         payload: Any = UploadParser._payload_from_mapping(block)
@@ -127,7 +123,6 @@ class UploadParser:
         if nested is not None:
             return UploadParser._payload_from_mapping(nested)
         return None
-
 
     @staticmethod
     def upload_from_file_block(block: Any) -> dict[str, Any] | None:
@@ -143,7 +138,6 @@ class UploadParser:
             safe_name = f"{safe_name}.pdf" if safe_name else "cv.pdf"
         return {"filename": safe_name, "content_base64": payload}
 
-
     @staticmethod
     def message_content_blocks(message: Any) -> list[Any]:
         content: Any = (
@@ -155,7 +149,6 @@ class UploadParser:
             return content
         return []
 
-
     @staticmethod
     def extract_uploads_from_message(message: Any) -> list[dict[str, Any]]:
         uploads: list[dict[str, Any]] = []
@@ -165,12 +158,12 @@ class UploadParser:
                 uploads.append(upload)
         return uploads
 
-
     @staticmethod
     def extract_upload_from_message(message: Any) -> dict[str, Any] | None:
-        uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(message)
+        uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(
+            message
+        )
         return uploads[0] if uploads else None
-
 
     @staticmethod
     def read_uploaded_cv(uploaded_file: Any) -> str:
@@ -205,7 +198,6 @@ class UploadParser:
         )
         return extract_pdf_text(payload)
 
-
     @staticmethod
     def cv_document_from_upload(uploaded_file: Any) -> dict[str, Any]:
         filename: str = str(
@@ -220,7 +212,6 @@ class UploadParser:
             "cv_features": None,
             "cv_review": None,
         }
-
 
     @staticmethod
     def with_message_content(message: Any, content: str | list[dict[str, Any]]) -> Any:
@@ -239,7 +230,9 @@ class UploadParser:
                 }
             return updated
 
-        additional: dict[str, Any] = dict(getattr(message, "additional_kwargs", None) or {})
+        additional: dict[str, Any] = dict(
+            getattr(message, "additional_kwargs", None) or {}
+        )
         additional.pop("pending_cv_upload", None)
         additional.pop("pending_cv_uploads", None)
         if hasattr(message, "model_copy"):
@@ -255,7 +248,6 @@ class UploadParser:
             updated["additional_kwargs"] = additional
         return updated
 
-
     @staticmethod
     def sanitize_file_message(
         message: Any,
@@ -269,7 +261,8 @@ class UploadParser:
         file_blocks: list[Any] = [
             block
             for block in content
-            if (parsed := UploadParser._block_as_dict(block)) is not None and UploadParser._is_file_block(parsed)
+            if (parsed := UploadParser._block_as_dict(block)) is not None
+            and UploadParser._is_file_block(parsed)
         ]
         if not file_blocks:
             return None
@@ -282,14 +275,20 @@ class UploadParser:
             and str(parsed.get("text") or "").strip()
         ]
         text_parts.append(PDF_UPLOAD_MARKER)
-        sanitized: Any = UploadParser.with_message_content(message, "\n".join(text_parts))
+        sanitized: Any = UploadParser.with_message_content(
+            message, "\n".join(text_parts)
+        )
 
         if not stash_upload:
             return sanitized
 
-        uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(message)
+        uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(
+            message
+        )
         if not uploads:
-            first_file: dict[str, Any] = UploadParser._block_as_dict(file_blocks[0]) or {}
+            first_file: dict[str, Any] = (
+                UploadParser._block_as_dict(file_blocks[0]) or {}
+            )
             uploads = [
                 {
                     "filename": UploadParser._file_block_filename(first_file),
@@ -318,14 +317,20 @@ class UploadParser:
         return [
             sanitized
             for message in messages
-            if (sanitized := UploadParser.sanitize_file_message(message, stash_upload=False)) is not None
+            if (
+                sanitized := UploadParser.sanitize_file_message(
+                    message, stash_upload=False
+                )
+            )
+            is not None
         ]
-
 
     @staticmethod
     def pending_uploads_from_messages(messages: list[Any]) -> list[dict[str, Any]]:
         for message in reversed(messages):
-            uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(message)
+            uploads: list[dict[str, Any]] = UploadParser.extract_uploads_from_message(
+                message
+            )
             if uploads:
                 return uploads
             additional: Any = (
@@ -343,12 +348,12 @@ class UploadParser:
                 return [stashed]
         return []
 
-
     @staticmethod
     def pending_upload_from_messages(messages: list[Any]) -> dict[str, Any] | None:
-        uploads: list[dict[str, Any]] = UploadParser.pending_uploads_from_messages(messages)
+        uploads: list[dict[str, Any]] = UploadParser.pending_uploads_from_messages(
+            messages
+        )
         return uploads[0] if uploads else None
-
 
     @staticmethod
     def clear_stashed_uploads(messages: list[Any]) -> list[Any]:
@@ -376,7 +381,9 @@ class UploadParser:
                 cleared.append(updated)
                 continue
             if hasattr(message, "model_copy"):
-                cleared.append(message.model_copy(update={"additional_kwargs": remaining}))
+                cleared.append(
+                    message.model_copy(update={"additional_kwargs": remaining})
+                )
                 continue
             updated: dict[str, Any] = {
                 "role": "user",

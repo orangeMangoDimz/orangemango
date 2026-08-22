@@ -32,11 +32,15 @@ class ConversationMemoryService:
         self._conversation = conversation
         self._chat_model = chat_model
 
-    async def summarize_conversation_node(self, state: ConversationState) -> dict[str, Any]:
+    async def summarize_conversation_node(
+        self, state: ConversationState
+    ) -> dict[str, Any]:
         if not self._conversation.should_summarize_conversation(state):
             return {}
 
-        turns: list[dict[str, str]] = self._conversation.conversation_text_messages(state)
+        turns: list[dict[str, str]] = self._conversation.conversation_text_messages(
+            state
+        )
         keep_from: int = max(0, len(turns) - MAX_CONTEXT_MESSAGES)
         cursor: int = min(self._state.conversation_memory_cursor(state), keep_from)
         older_turns: list[dict[str, str]] = turns[cursor:keep_from]

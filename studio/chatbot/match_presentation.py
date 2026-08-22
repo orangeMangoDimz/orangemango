@@ -167,11 +167,7 @@ def _project_group(
     ]
     key: str = _best_assessment_for_group(rows)
     score_values: list[float] = [
-        value
-        for value in (
-            _normalized_score(row) for row in rows
-        )
-        if value is not None
+        value for value in (_normalized_score(row) for row in rows) if value is not None
     ]
     max_score: float | None = max(score_values) if score_values else None
     # Use the best-scored row as representative when we need a single job object.
