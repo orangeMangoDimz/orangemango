@@ -7,6 +7,7 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 
 from app.config.const.chatbot import (
+    BRANCH_END,
     GRAPH_CV_SUBAGENT,
     NODE_COMPARE_CVS,
     NODE_EXTRACT_CV,
@@ -15,7 +16,6 @@ from app.config.const.chatbot import (
     ROUTE_COMPARE_CVS,
     ROUTE_EXTRACT_CV,
     ROUTE_REVIEW_CV,
-    BRANCH_END,
 )
 from app.graph.chatbot.container import ChatbotContainer
 from app.models.chatbot.state import ConversationState

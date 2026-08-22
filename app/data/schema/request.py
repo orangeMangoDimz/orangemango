@@ -1,9 +1,10 @@
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
 from app.config.const.api_res import (
     MESSAGE_MUST_NOT_BE_BLANK,
     THREAD_ID_MUST_NOT_BE_BLANK,
 )
 from app.config.const.chat import MAX_MESSAGE_LENGTH, MAX_THREAD_ID_LENGTH
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class MessageRequest(BaseModel):

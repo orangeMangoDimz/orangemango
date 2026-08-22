@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
 import math
 import os
+from collections import defaultdict, deque
 from time import monotonic
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
 
 from app.config.const.api_res import (
     INVALID_RATE_LIMIT_REQUESTS,
@@ -16,13 +23,6 @@ from app.config.const.chat import (
     CHAT_RATE_LIMIT_WINDOW_SECONDS,
 )
 from app.logger import log_exception, logger
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
-
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",

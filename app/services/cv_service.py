@@ -18,9 +18,9 @@ from app.data.schema.response import (
 )
 from app.logger import log_exception, logger
 from app.repositories.chat_repository import (
-    ChatRequestBusyError,
     ChatPersistenceError,
     ChatRepository,
+    ChatRequestBusyError,
     ThreadNotFoundError,
 )
 from app.repositories.cv_repository import (
