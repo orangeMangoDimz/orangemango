@@ -27,7 +27,7 @@ repos:
         entry: isort
         language: python
         additional_dependencies: [isort==8.0.1]
-        args: [--profile=black, --line-length=500]
+        args: [--profile=black, --line-length=1000]
         files: ^app/.*\.py$
       - id: no-regex
         name: Reject regular-expression usage
