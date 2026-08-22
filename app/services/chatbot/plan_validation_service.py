@@ -85,7 +85,8 @@ class PlanValidationService:
         self._reuse = reuse
         self._execution = execution
 
-    def planned_job_stages(self,
+    def planned_job_stages(
+        self,
         state: ConversationState,
         *,
         route: RouteName,
@@ -116,12 +117,13 @@ class PlanValidationService:
         stages: list[str] = []
         if selection.get("job_source") == "search":
             if refresh or not (
-                self._reuse.current_search_is_reusable(gated) and self._jobs.resolve_selected_jobs(gated)
+                self._reuse.current_search_is_reusable(gated)
+                and self._jobs.resolve_selected_jobs(gated)
             ):
                 stages.append(NODE_SCRAPE_JOBS)
-        elif selection.get("job_source") == "pasted" and not self._state.jobs_bucket(gated).get(
-            "results"
-        ):
+        elif selection.get("job_source") == "pasted" and not self._state.jobs_bucket(
+            gated
+        ).get("results"):
             stages.append(ROUTE_EXTRACT_JOB)
         if refresh or not self._reuse.action_result_is_reusable(
             gated,
@@ -131,8 +133,8 @@ class PlanValidationService:
             stages.append(ROUTE_MATCH_JOBS)
         return stages
 
-
-    def persist_planned_job_state(self,
+    def persist_planned_job_state(
+        self,
         state: ConversationState,
         *,
         decision: RouteDecision,
@@ -147,7 +149,11 @@ class PlanValidationService:
         )
         role_evidence: str | None = selection.get("role_evidence")
         role_source: RoleSource = selection.get("role_source") or "none"
-        if not role_constraints and current_goal and not current_goal.get("invalidated"):
+        if (
+            not role_constraints
+            and current_goal
+            and not current_goal.get("invalidated")
+        ):
             role_constraints = TextUtils.normalize_role_constraints(
                 current_goal.get("role_constraints")
             )
@@ -160,12 +166,13 @@ class PlanValidationService:
                 "targets": self._state.target_state_fields(selection),
             },
         }
-        document: dict[str, Any] | None = self._cvs.unambiguous_extracted_cv(selected_state)
+        document: dict[str, Any] | None = self._cvs.unambiguous_extracted_cv(
+            selected_state
+        )
 
         if route == ROUTE_SEARCH_JOBS and role_constraints:
             refresh_requested: bool = bool(
-                selection.get("job_refresh")
-                or selection.get("refresh_requested")
+                selection.get("job_refresh") or selection.get("refresh_requested")
             )
             reuse_goal: bool = (
                 refresh_requested
@@ -191,7 +198,9 @@ class PlanValidationService:
             scrape_request: dict[str, Any] = dict(
                 jobs_update.get("scrape_request") or {}
             )
-            scrape_request["keywords"] = TextUtils.display_role_constraints(role_constraints)
+            scrape_request["keywords"] = TextUtils.display_role_constraints(
+                role_constraints
+            )
             jobs_update["scrape_request"] = scrape_request
             selection = {
                 **selection,
@@ -203,10 +212,9 @@ class PlanValidationService:
         elif route == ROUTE_MATCH_JOBS:
             if current_goal is not None and not current_goal.get("invalidated"):
                 jobs_update["active_job_goal"] = current_goal
-            if (
-                selection.get("job_source") == "none"
-                and self._state.jobs_bucket(state).get("results")
-            ):
+            if selection.get("job_source") == "none" and self._state.jobs_bucket(
+                state
+            ).get("results"):
                 selection = {**selection, "job_source": "existing"}
             if decision.assessment_requested:
                 selection = {**selection, "assessment_requested": True}
@@ -223,9 +231,7 @@ class PlanValidationService:
         policy: dict[str, Any] = {
             "planned_stages": [],
             "policy_reason": REASON_PLANNER_SELECTED_ACTION,
-            "active_goal_id": (
-                jobs_update.get("active_job_goal") or {}
-            ).get("id"),
+            "active_goal_id": (jobs_update.get("active_job_goal") or {}).get("id"),
         }
         if route in {ROUTE_SEARCH_JOBS, ROUTE_MATCH_JOBS}:
             policy["planned_stages"] = self.planned_job_stages(
@@ -252,11 +258,7 @@ class PlanValidationService:
             if str(item).strip()
         ]
         return RouteDecision(
-            route=(
-                plan.get("action")
-                or router.get("planned_action")
-                or ROUTE_RESPOND
-            ),
+            route=(plan.get("action") or router.get("planned_action") or ROUTE_RESPOND),
             reason=str(
                 plan.get("reason")
                 or request.get("goal_reason")
@@ -289,13 +291,11 @@ class PlanValidationService:
             is_follow_up=bool(request.get("is_follow_up")),
             selected_cv_id=selected_ids[0] if len(selected_ids) == 1 else None,
             selected_job_keys=targets.get("selected_job_keys"),
-            scrape_request=ScrapeRequest(
-                **dict(request.get("scrape_request") or {})
-            ),
+            scrape_request=ScrapeRequest(**dict(request.get("scrape_request") or {})),
         )
 
-
-    def planned_action_validation_error(self,
+    def planned_action_validation_error(
+        self,
         state: ConversationState,
         decision: RouteDecision,
     ) -> str | None:
@@ -335,7 +335,8 @@ class PlanValidationService:
             if not self._cvs.state_cv_documents(state):
                 return ERROR_CV_UPLOAD_REQUIRED
             extracted_ids: set[str] = {
-                str(item.get("id") or "") for item in self._cvs.extracted_cv_documents(state)
+                str(item.get("id") or "")
+                for item in self._cvs.extracted_cv_documents(state)
             }
             target_ids: set[str] = set(selected_ids) if selected_ids else extracted_ids
             if not target_ids.issubset(extracted_ids):
@@ -344,9 +345,10 @@ class PlanValidationService:
                 return ERROR_CV_REVIEW_TARGET_COUNT_INVALID
             if action == ROUTE_COMPARE_CVS and len(target_ids) < 2:
                 return ERROR_CV_COMPARISON_TARGET_COUNT_INVALID
-        if action == ROUTE_EXTRACT_JOB and not (
-            selection.get("job_input_text") or ""
-        ).strip():
+        if (
+            action == ROUTE_EXTRACT_JOB
+            and not (selection.get("job_input_text") or "").strip()
+        ):
             return ERROR_PASTED_JOB_REQUIRED
         if action == ROUTE_MATCH_JOBS:
             if selection.get("job_source") == "existing" and not catalogs["job_keys"]:
@@ -354,7 +356,9 @@ class PlanValidationService:
             if selection.get("job_source") in {"search", "pasted"}:
                 if not catalogs["job_keys"]:
                     return ERROR_JOB_DATA_REQUIRED_BEFORE_MATCHING
-        if action in self._state.completed_actions(state) and not selection.get("refresh_requested"):
+        if action in self._state.completed_actions(state) and not selection.get(
+            "refresh_requested"
+        ):
             if action in {ROUTE_SEARCH_JOBS, ROUTE_MATCH_JOBS}:
                 if not self._reuse.action_result_is_reusable(
                     state,
@@ -365,7 +369,6 @@ class PlanValidationService:
             else:
                 return f"{ERROR_DUPLICATE_ACTION}{action}"
         return None
-
 
     async def validate_plan_node(self, state: ConversationState) -> dict[str, Any]:
         decision: RouteDecision = self.legacy_decision_from_stages(state)
@@ -389,7 +392,9 @@ class PlanValidationService:
             exclude_none=True
         )
         if not scrape_request:
-            scrape_request = dict(self._state.jobs_bucket(state).get("scrape_request") or {})
+            scrape_request = dict(
+                self._state.jobs_bucket(state).get("scrape_request") or {}
+            )
         jobs_update: dict[str, Any] = {
             "scrape_request": scrape_request,
         }

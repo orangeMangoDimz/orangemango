@@ -563,6 +563,8 @@ MAX_ACTION_RESULT_CHARS: int = 6000
 SEARCH_RESULT_TTL_SECONDS: int = 24 * 60 * 60
 MIN_JOB_INTENT_CONFIDENCE: float = 0.75
 PDF_UPLOAD_MARKER: str = "[PDF CV uploaded separately]"
+
+
 class ScrapeRequest(BaseModel):
     keywords: list[str] = Field(default_factory=list, max_length=5)
     sites: list[str] = Field(default_factory=list, max_length=5)
@@ -1143,7 +1145,9 @@ def request_job_task(state: ConversationState) -> JobTask:
 
 
 def request_job_response(state: ConversationState) -> JobResponse:
-    return cast(JobResponse, request_values_from_state(state).get("job_response") or "none")
+    return cast(
+        JobResponse, request_values_from_state(state).get("job_response") or "none"
+    )
 
 
 def request_show_score(state: ConversationState) -> bool:
@@ -1333,8 +1337,7 @@ def _execution_args(
             return {"cv_ids": ids}
         return {
             "cv_filenames": [
-                str(document.get("filename") or "cv.pdf")
-                for document in documents
+                str(document.get("filename") or "cv.pdf") for document in documents
             ]
         }
     if action == "review_cv":
@@ -1377,8 +1380,7 @@ def _execution_args(
                 if str(document.get("id") or "").strip()
             ],
             "job_keys": [
-                job_selection_key(item, index)
-                for index, item in enumerate(jobs)
+                job_selection_key(item, index) for index, item in enumerate(jobs)
             ],
         }
         if request.get("job_source"):
@@ -1413,9 +1415,7 @@ def _execution_context(
                 "field": "jobs.active_job_goal.role_constraints",
             }
     else:
-        context["source_reference"] = {
-            "field": "routing.request.role.evidence"
-        }
+        context["source_reference"] = {"field": "routing.request.role.evidence"}
     return context
 
 
@@ -1475,7 +1475,9 @@ def _execution_result(
         failed = any(item.startswith("job_scraping_failed:") for item in errors)
     else:
         matches: list[Any] = [
-            item for item in (jobs_update.get("matches") or []) if isinstance(item, dict)
+            item
+            for item in (jobs_update.get("matches") or [])
+            if isinstance(item, dict)
         ]
         result = {"match_count": len(matches), "errors": errors}
         failed = bool(errors)
@@ -1507,7 +1509,9 @@ def build_execution_step(
     to_node: ExecutionToNodeState = {
         "graph": destination_graph,
         "node": destination_node,
-        "uses": list(EXECUTION_NODE_USES.get((destination_graph, destination_node), [])),
+        "uses": list(
+            EXECUTION_NODE_USES.get((destination_graph, destination_node), [])
+        ),
         "note": {
             "summary": f"Executed {action}.",
             "reason": "action_failed" if status == "failed" else "action_completed",
@@ -1591,9 +1595,7 @@ def record_completed_action(
         if isinstance(routing_update, dict)
         else update.get("plan") or update.get("router")
     )
-    nested: dict[str, Any] = (
-        dict(plan_update) if isinstance(plan_update, dict) else {}
-    )
+    nested: dict[str, Any] = dict(plan_update) if isinstance(plan_update, dict) else {}
     rest: dict[str, Any] = {
         key: value
         for key, value in update.items()
@@ -1754,12 +1756,13 @@ def slim_search_result(
         ]
     jobs: list[dict[str, Any]] = []
     for item in results:
-        raw_card: Any = item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+        raw_card: Any = (
+            item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+        )
         card: dict[str, Any] = {
             field: raw_card.get(field)
             for field in ("title", "location", "posted_date", "salary", "url")
-            if isinstance(raw_card, dict)
-            and raw_card.get(field) not in (None, "", [])
+            if isinstance(raw_card, dict) and raw_card.get(field) not in (None, "", [])
         }
         if card:
             jobs.append(card)
@@ -2679,8 +2682,7 @@ def persist_planned_job_state(
 
     if route == "search_jobs" and role_constraints:
         refresh_requested: bool = bool(
-            selection.get("job_refresh")
-            or selection.get("refresh_requested")
+            selection.get("job_refresh") or selection.get("refresh_requested")
         )
         reuse_goal: bool = (
             refresh_requested
@@ -2692,9 +2694,7 @@ def persist_planned_job_state(
             if reuse_goal
             else build_active_job_goal(
                 source=(
-                    "cv_derived"
-                    if role_source == "cv_inferred"
-                    else "explicit_search"
+                    "cv_derived" if role_source == "cv_inferred" else "explicit_search"
                 ),
                 role_constraints=role_constraints,
                 cv_id=str(document.get("id")) if document else None,
@@ -2703,9 +2703,7 @@ def persist_planned_job_state(
             )
         )
         jobs_update["active_job_goal"] = goal
-        scrape_request: dict[str, Any] = dict(
-            jobs_update.get("scrape_request") or {}
-        )
+        scrape_request: dict[str, Any] = dict(jobs_update.get("scrape_request") or {})
         scrape_request["keywords"] = display_role_constraints(role_constraints)
         jobs_update["scrape_request"] = scrape_request
         selection = {
@@ -2718,10 +2716,7 @@ def persist_planned_job_state(
     elif route == "match_jobs":
         if current_goal is not None and not current_goal.get("invalidated"):
             jobs_update["active_job_goal"] = current_goal
-        if (
-            selection.get("job_source") == "none"
-            and jobs_bucket(state).get("results")
-        ):
+        if selection.get("job_source") == "none" and jobs_bucket(state).get("results"):
             selection = {**selection, "job_source": "existing"}
         if decision.assessment_requested:
             selection = {**selection, "assessment_requested": True}
@@ -2738,9 +2733,7 @@ def persist_planned_job_state(
     policy: dict[str, Any] = {
         "planned_stages": [],
         "policy_reason": "planner_selected_action",
-        "active_goal_id": (
-            jobs_update.get("active_job_goal") or {}
-        ).get("id"),
+        "active_goal_id": (jobs_update.get("active_job_goal") or {}).get("id"),
     }
     if route in {"search_jobs", "match_jobs"}:
         policy["planned_stages"] = planned_job_stages(
@@ -3140,7 +3133,11 @@ def _appears_like_job_message(content: str) -> bool:
     numbered_item: bool = False
     for line in lines[:6]:
         first_segment: str = line.split(" ", 1)[0]
-        if first_segment and first_segment[-1] in {".", ")"} and first_segment[:-1].isdigit():
+        if (
+            first_segment
+            and first_segment[-1] in {".", ")"}
+            and first_segment[:-1].isdigit()
+        ):
             numbered_item = True
             break
     has_job_fields: bool = any(
@@ -3430,9 +3427,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         return {
             **updates,
             "input_error": True,
-            "errors": [
-                "cv_upload_payload_missing"
-            ],
+            "errors": ["cv_upload_payload_missing"],
         }
 
     existing_documents: list[dict[str, Any]] = state_cv_documents(state)
@@ -3441,9 +3436,7 @@ def ingest_input(state: ConversationState) -> dict[str, Any]:
         return {
             **updates,
             "input_error": True,
-            "errors": [
-                f"cv_document_limit_reached:{MAX_CV_DOCUMENTS}"
-            ],
+            "errors": [f"cv_document_limit_reached:{MAX_CV_DOCUMENTS}"],
         }
 
     new_documents: list[dict[str, Any]] = []
@@ -3660,9 +3653,7 @@ def planner_context(state: ConversationState) -> dict[str, Any]:
                 MAX_AGENT_ACTIONS - len(completed_actions(state)),
             ),
             "refresh_requested": bool(request.get("refresh_requested")),
-            "pasted_job_available": bool(
-                (request.get("job_input_text") or "").strip()
-            ),
+            "pasted_job_available": bool((request.get("job_input_text") or "").strip()),
         },
     }
 
@@ -3828,17 +3819,11 @@ async def request_router_node(
         "job_source": (
             "pasted" if decision.job.task == "extract" else mapped_job_source
         ),
-        "job_input_text": (
-            latest if mapped_job_source == "pasted" else None
-        ),
+        "job_input_text": (latest if mapped_job_source == "pasted" else None),
         "scrape_request": decision.job.scrape.model_dump(exclude_none=True),
         "show_score": bool(decision.score_requested),
-        "refresh_requested": bool(
-            mapped_job_refresh
-        ),
-        "role_candidates": [
-            item.model_dump() for item in decision.role_candidates
-        ],
+        "refresh_requested": bool(mapped_job_refresh),
+        "role_candidates": [item.model_dump() for item in decision.role_candidates],
     }
     request: dict[str, Any] = request_state_fields(request_input)
     request_values_view: dict[str, Any] = request_values(request)
@@ -3950,11 +3935,7 @@ def legacy_decision_from_stages(state: ConversationState) -> RouteDecision:
         if str(item).strip()
     ]
     return RouteDecision(
-        route=(
-            plan.get("action")
-            or router.get("planned_action")
-            or "respond"
-        ),
+        route=(plan.get("action") or router.get("planned_action") or "respond"),
         reason=str(
             plan.get("reason")
             or request.get("goal_reason")
@@ -3987,9 +3968,7 @@ def legacy_decision_from_stages(state: ConversationState) -> RouteDecision:
         is_follow_up=bool(request.get("is_follow_up")),
         selected_cv_id=selected_ids[0] if len(selected_ids) == 1 else None,
         selected_job_keys=targets.get("selected_job_keys"),
-        scrape_request=ScrapeRequest(
-            **dict(request.get("scrape_request") or {})
-        ),
+        scrape_request=ScrapeRequest(**dict(request.get("scrape_request") or {})),
     )
 
 
@@ -4042,9 +4021,7 @@ def planned_action_validation_error(
             return "cv_review_target_count_invalid"
         if action == "compare_cvs" and len(target_ids) < 2:
             return "cv_comparison_target_count_invalid"
-    if action == "extract_job" and not (
-        selection.get("job_input_text") or ""
-    ).strip():
+    if action == "extract_job" and not (selection.get("job_input_text") or "").strip():
         return "pasted_job_required"
     if action == "match_jobs":
         if selection.get("job_source") == "existing" and not catalogs["job_keys"]:
@@ -4191,9 +4168,7 @@ async def run_cv_subagent(state: ConversationState) -> dict[str, Any]:
                         "cv_features": None,
                     }
                 )
-                errors.append(
-                    f"cv_extraction_invalid:{filename}"
-                )
+                errors.append(f"cv_extraction_invalid:{filename}")
                 continue
             updated_documents.append(
                 {
@@ -4950,8 +4925,7 @@ def is_usable_model_response(response: str) -> bool:
     return normalized not in {"", "none", "null", "n/a", "na"}
 
 
-CHAT_PROMPT: str = (
-    """You are a concise CV and job-search assistant.
+CHAT_PROMPT: str = """You are a concise CV and job-search assistant.
 
 Answer the latest user request naturally using the supplied structured data.
 Treat that data as authoritative. Do not invent facts or mention implementation
@@ -4962,7 +4936,6 @@ Never claim a criterion or filter that is absent from args. Do not mention graph
 nodes, state, notes, or implementation details. Keep the wording and placement
 natural rather than following a fixed response template.
 """
-)
 
 
 def bounded_conversation(state: ConversationState) -> list[Any]:
@@ -5098,7 +5071,9 @@ def route_into_job_subagent(state: ConversationState) -> str:
                 and current_search_is_reusable(state)
                 and resolve_selected_jobs(state)
             ):
-                planned_stages = [item for item in planned_stages if item != "scrape_jobs"]
+                planned_stages = [
+                    item for item in planned_stages if item != "scrape_jobs"
+                ]
                 if "match_jobs" not in planned_stages:
                     return "end"
                 if action_result_is_reusable(
@@ -5235,7 +5210,9 @@ def route_after_router(state: ConversationState) -> str:
 def route_after_plan_validation(state: ConversationState) -> str:
     route: Any = router_bucket(state).get("route") or "respond"
     plan: dict[str, Any] = plan_bucket(state)
-    if route in {"search_jobs", "match_jobs"} and not (plan.get("planned_stages") or []):
+    if route in {"search_jobs", "match_jobs"} and not (
+        plan.get("planned_stages") or []
+    ):
         return "respond"
     if route in AGENT_ACTIONS or route == "respond":
         return str(route)
@@ -5271,9 +5248,8 @@ def route_after_job_subagent(state: ConversationState) -> str:
     if route == "search_jobs":
         if response_type != "list":
             return "respond"
-        if (
-            "search_jobs" in completed_actions(state)
-            and not selection.get("assessment_requested")
+        if "search_jobs" in completed_actions(state) and not selection.get(
+            "assessment_requested"
         ):
             return "respond"
     return route_after_agent_action(state)

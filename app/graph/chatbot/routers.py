@@ -63,7 +63,6 @@ class CvSubagentRouter:
             return ROUTE_REVIEW_CV
         return ROUTE_EXTRACT_CV
 
-
     def route_after_cv_extraction(self, state: ConversationState) -> str:
         """Continue to the requested CV action after prerequisite extraction."""
         route: RouteName | None = self._state.router_bucket(state).get("route")
@@ -74,6 +73,7 @@ class CvSubagentRouter:
         if route == ROUTE_COMPARE_CVS and extracted_count >= 2:
             return ROUTE_COMPARE_CVS
         return BRANCH_END
+
 
 class JobSubagentRouter:
     """Entry and post-search routing inside the job subagent."""
@@ -93,13 +93,21 @@ class JobSubagentRouter:
         router: dict[str, Any] = self._state.router_bucket(state)
         selection: dict[str, Any] = self._state.selection_bucket(state)
         route: RouteName | None = router.get("route")
-        planned_stages: list[str] = self._state.plan_bucket(state).get("planned_stages") or []
+        planned_stages: list[str] = (
+            self._state.plan_bucket(state).get("planned_stages") or []
+        )
         if not planned_stages:
             return BRANCH_END
         if route == ROUTE_EXTRACT_JOB:
-            return NODE_EXTRACT_PASTED_JOB if ROUTE_EXTRACT_JOB in planned_stages else BRANCH_END
+            return (
+                NODE_EXTRACT_PASTED_JOB
+                if ROUTE_EXTRACT_JOB in planned_stages
+                else BRANCH_END
+            )
         if route == ROUTE_SEARCH_JOBS:
-            return NODE_SCRAPE_JOBS if NODE_SCRAPE_JOBS in planned_stages else BRANCH_END
+            return (
+                NODE_SCRAPE_JOBS if NODE_SCRAPE_JOBS in planned_stages else BRANCH_END
+            )
         if route == ROUTE_MATCH_JOBS:
             if NODE_SCRAPE_JOBS in planned_stages:
                 if (
@@ -107,7 +115,9 @@ class JobSubagentRouter:
                     and self._reuse.current_search_is_reusable(state)
                     and self._jobs.resolve_selected_jobs(state)
                 ):
-                    planned_stages = [item for item in planned_stages if item != NODE_SCRAPE_JOBS]
+                    planned_stages = [
+                        item for item in planned_stages if item != NODE_SCRAPE_JOBS
+                    ]
                     if ROUTE_MATCH_JOBS not in planned_stages:
                         return BRANCH_END
                     if self._reuse.action_result_is_reusable(
@@ -127,11 +137,12 @@ class JobSubagentRouter:
                 return NODE_EXTRACT_PASTED_JOB
         return BRANCH_END
 
-
     def route_after_search_or_extract(self, state: ConversationState) -> str:
         router: dict[str, Any] = self._state.router_bucket(state)
         route: RouteName | None = router.get("route")
-        planned_stages: list[str] = self._state.plan_bucket(state).get("planned_stages") or []
+        planned_stages: list[str] = (
+            self._state.plan_bucket(state).get("planned_stages") or []
+        )
         if route != ROUTE_MATCH_JOBS or ROUTE_MATCH_JOBS not in planned_stages:
             return BRANCH_END
         jobs_state: dict[str, Any] = self._state.jobs_bucket(state)
@@ -141,6 +152,7 @@ class JobSubagentRouter:
         if not jobs_state.get("results"):
             return BRANCH_END
         return ROUTE_MATCH_JOBS
+
 
 class ChatbotRouter:
     """Top-level routing between planning, subagents, and the response node."""
@@ -163,7 +175,10 @@ class ChatbotRouter:
         route: RouteName = router.get("route") or ROUTE_RESPOND
         needs_extraction: bool = self._cvs.cvs_need_extraction(state)
         if needs_extraction and self._cvs.intent_requires_cv_features(state):
-            if route in {ROUTE_REVIEW_CV, ROUTE_COMPARE_CVS} and ROUTE_EXTRACT_CV not in actions:
+            if (
+                route in {ROUTE_REVIEW_CV, ROUTE_COMPARE_CVS}
+                and ROUTE_EXTRACT_CV not in actions
+            ):
                 return route
             return ROUTE_RESPOND if ROUTE_EXTRACT_CV in actions else ROUTE_EXTRACT_CV
         if route == ROUTE_EXTRACT_CV and not needs_extraction:
@@ -190,16 +205,16 @@ class ChatbotRouter:
             return ROUTE_RESPOND
         return ROUTE_RESPOND
 
-
     def route_after_plan_validation(self, state: ConversationState) -> str:
         route: Any = self._state.router_bucket(state).get("route") or ROUTE_RESPOND
         plan: dict[str, Any] = self._state.plan_bucket(state)
-        if route in {ROUTE_SEARCH_JOBS, ROUTE_MATCH_JOBS} and not (plan.get("planned_stages") or []):
+        if route in {ROUTE_SEARCH_JOBS, ROUTE_MATCH_JOBS} and not (
+            plan.get("planned_stages") or []
+        ):
             return ROUTE_RESPOND
         if route in AGENT_ACTIONS or route == ROUTE_RESPOND:
             return str(route)
         return ROUTE_RESPOND
-
 
     def route_after_agent_action(self, state: ConversationState) -> str:
         return (
@@ -208,14 +223,12 @@ class ChatbotRouter:
             else NODE_WORKFLOW_PLANNER
         )
 
-
     def route_after_cv_subagent(self, state: ConversationState) -> str:
         documents: list[dict[str, Any]] = self._cvs.state_cv_documents(state)
         has_text: bool = any((doc.get("cv_text") or "").strip() for doc in documents)
         if not has_text:
             return ROUTE_RESPOND
         return self.route_after_agent_action(state)
-
 
     def route_after_job_subagent(self, state: ConversationState) -> str:
         router: dict[str, Any] = self._state.router_bucket(state)
@@ -225,14 +238,16 @@ class ChatbotRouter:
         staged: list[str] = plan.get("planned_stages") or []
         response_type: JobResponse = self._state.request_job_response(state)
         if route == ROUTE_MATCH_JOBS:
-            if ROUTE_MATCH_JOBS not in staged or ROUTE_MATCH_JOBS in self._state.completed_actions(state):
+            if (
+                ROUTE_MATCH_JOBS not in staged
+                or ROUTE_MATCH_JOBS in self._state.completed_actions(state)
+            ):
                 return ROUTE_RESPOND
         if route == ROUTE_SEARCH_JOBS:
             if response_type != "list":
                 return ROUTE_RESPOND
-            if (
-                ROUTE_SEARCH_JOBS in self._state.completed_actions(state)
-                and not selection.get("assessment_requested")
-            ):
+            if ROUTE_SEARCH_JOBS in self._state.completed_actions(
+                state
+            ) and not selection.get("assessment_requested"):
                 return ROUTE_RESPOND
         return self.route_after_agent_action(state)

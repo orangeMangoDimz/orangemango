@@ -29,6 +29,11 @@ repos:
         additional_dependencies: [isort==8.0.1]
         args: [--profile=black, --line-length=1000]
         files: ^app/.*\.py$
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run ruff format --check
+        language: system
+        types: [python]
       - id: no-regex
         name: Reject regular-expression usage
         entry: uv run python "scripts/utils/check_no_regex copy.py"

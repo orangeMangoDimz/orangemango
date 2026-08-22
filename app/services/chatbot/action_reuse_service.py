@@ -31,7 +31,9 @@ class ActionReuseService:
         self._cvs = cvs
         self._jobs = jobs
 
-    def normalize_scrape_request(self, request: dict[str, Any] | None) -> dict[str, Any]:
+    def normalize_scrape_request(
+        self, request: dict[str, Any] | None
+    ) -> dict[str, Any]:
         raw: dict[str, Any] = request if isinstance(request, dict) else {}
         keywords: list[str] = sorted(
             {
@@ -53,27 +55,29 @@ class ActionReuseService:
             "max_age_hours": raw.get("max_age_hours"),
         }
 
-    def search_result_is_fresh(self,
+    def search_result_is_fresh(
+        self,
         entry: dict[str, Any] | None,
         *,
         now: datetime | None = None,
     ) -> bool:
         if not isinstance(entry, dict):
             return False
-        executed: datetime | None = TextUtils.parse_executed_at(entry.get("executed_at"))
+        executed: datetime | None = TextUtils.parse_executed_at(
+            entry.get("executed_at")
+        )
         if executed is None:
             return False
         current: datetime = now or datetime.now(timezone.utc)
         return (current - executed).total_seconds() <= SEARCH_RESULT_TTL_SECONDS
 
-
-    def stored_action_result(self,
+    def stored_action_result(
+        self,
         state: ConversationState,
         action: str,
     ) -> dict[str, Any] | None:
         entry: Any = self._state.action_results_bucket(state).get(action)
         return dict(entry) if isinstance(entry, dict) else None
-
 
     def action_fingerprint(self, action: str, state: ConversationState) -> str | None:
         selection: dict[str, Any] = self._state.selection_bucket(state)
@@ -92,7 +96,9 @@ class ActionReuseService:
                     "cv_id": str(target.get("id") or ""),
                     "cv_version": self._cvs.cv_version(target),
                     "mode": selection.get("review_mode") or "general",
-                    "focus": TextUtils.normalize_fingerprint_text(selection.get("review_focus")),
+                    "focus": TextUtils.normalize_fingerprint_text(
+                        selection.get("review_focus")
+                    ),
                     "target_role": TextUtils.normalize_fingerprint_text(
                         selection.get("review_target_role")
                     ),
@@ -106,7 +112,10 @@ class ActionReuseService:
                 {
                     "action": "compare_cvs",
                     "cvs": [
-                        {"id": str(doc.get("id") or ""), "version": self._cvs.cv_version(doc)}
+                        {
+                            "id": str(doc.get("id") or ""),
+                            "version": self._cvs.cv_version(doc),
+                        }
                         for doc in documents
                     ],
                 }
@@ -117,7 +126,9 @@ class ActionReuseService:
             )
             if not text:
                 return None
-            return TextUtils.canonical_json_hash({"action": "extract_job", "text": text})
+            return TextUtils.canonical_json_hash(
+                {"action": "extract_job", "text": text}
+            )
         if action == "search_jobs":
             request: dict[str, Any] = self.normalize_scrape_request(
                 self._state.jobs_bucket(state).get("scrape_request")
@@ -131,7 +142,10 @@ class ActionReuseService:
             payload: dict[str, Any] = {
                 "action": "match_jobs",
                 "cvs": [
-                    {"id": str(doc.get("id") or ""), "version": self._cvs.cv_version(doc)}
+                    {
+                        "id": str(doc.get("id") or ""),
+                        "version": self._cvs.cv_version(doc),
+                    }
                     for doc in cvs
                 ],
                 "jobs": [
@@ -149,8 +163,8 @@ class ActionReuseService:
             return TextUtils.canonical_json_hash(payload)
         return None
 
-
-    def action_result_is_reusable(self,
+    def action_result_is_reusable(
+        self,
         state: ConversationState,
         action: str,
         fingerprint: str | None,
@@ -169,7 +183,6 @@ class ActionReuseService:
             return False
         return True
 
-
     def current_search_is_reusable(self, state: ConversationState) -> bool:
         return self.action_result_is_reusable(
             state,
@@ -177,7 +190,8 @@ class ActionReuseService:
             self.action_fingerprint("search_jobs", state),
         )
 
-    def reusable_action_snapshot(self,
+    def reusable_action_snapshot(
+        self,
         action: AgentAction,
         update: dict[str, Any],
         state: ConversationState,
@@ -232,7 +246,8 @@ class ActionReuseService:
             keys: Any = jobs_update.get("active_job_keys")
             if not isinstance(keys, list) or not keys:
                 keys = [
-                    JobKeyUtils.job_selection_key(item, index) for index, item in enumerate(results)
+                    JobKeyUtils.job_selection_key(item, index)
+                    for index, item in enumerate(results)
                 ]
             return {
                 "jobs": {

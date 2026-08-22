@@ -50,7 +50,6 @@ class ConversationService:
             return default
         return parsed if parsed > 0 else default
 
-
     def context_input_budget(self) -> int:
         context_window: int = self._positive_int_env(
             ENV_CONTEXT_WINDOW_TOKENS,
@@ -64,9 +63,13 @@ class ConversationService:
             ENV_CONTEXT_PROMPT_RESERVE_TOKENS,
             DEFAULT_CONTEXT_PROMPT_RESERVE_TOKENS,
         )
-        return max(MIN_CONTEXT_INPUT_BUDGET, context_window - output_reserve - prompt_reserve)
+        return max(
+            MIN_CONTEXT_INPUT_BUDGET, context_window - output_reserve - prompt_reserve
+        )
 
-    def conversation_text_messages(self, state: ConversationState) -> list[dict[str, str]]:
+    def conversation_text_messages(
+        self, state: ConversationState
+    ) -> list[dict[str, str]]:
         """Return model-readable turns while excluding tool protocol messages."""
         raw_messages: list[Any] = state.get("messages") or []
         if not raw_messages:
@@ -93,9 +96,9 @@ class ConversationService:
                     continue
                 turns.append({"role": "user", "content": normalized})
             elif role_name in {"ai", "assistant"}:
-                if not self.should_retain_job_messages(state) and self._appears_like_job_message(
-                    content
-                ):
+                if not self.should_retain_job_messages(
+                    state
+                ) and self._appears_like_job_message(content):
                     continue
                 turns.append({"role": "assistant", "content": content})
         return turns
@@ -103,15 +106,20 @@ class ConversationService:
     def should_retain_job_messages(self, state: ConversationState) -> bool:
         return self._state.request_job_response(state) == "list"
 
-
     def _appears_like_job_message(self, content: str) -> bool:
-        lines: list[str] = [line.strip() for line in content.splitlines() if line.strip()]
+        lines: list[str] = [
+            line.strip() for line in content.splitlines() if line.strip()
+        ]
         if len(lines) < 2:
             return False
         numbered_item: bool = False
         for line in lines[:6]:
             first_segment: str = line.split(" ", 1)[0]
-            if first_segment and first_segment[-1] in {".", ")"} and first_segment[:-1].isdigit():
+            if (
+                first_segment
+                and first_segment[-1] in {".", ")"}
+                and first_segment[:-1].isdigit()
+            ):
                 numbered_item = True
                 break
         has_job_fields: bool = any(
@@ -124,7 +132,6 @@ class ConversationService:
         )
         return bool(numbered_item and (has_job_fields or "http" in content.lower()))
 
-
     def should_summarize_conversation(self, state: ConversationState) -> bool:
         turns: list[dict[str, str]] = self.conversation_text_messages(state)
         if len(turns) <= MAX_CONTEXT_MESSAGES:
@@ -133,7 +140,9 @@ class ConversationService:
         trigger_tokens: int = int(input_budget * CONTEXT_SUMMARY_TRIGGER_RATIO)
         return count_tokens_approximately(turns) >= trigger_tokens
 
-    def router_recent_conversation(self, state: ConversationState) -> list[dict[str, str]]:
+    def router_recent_conversation(
+        self, state: ConversationState
+    ) -> list[dict[str, str]]:
         history: list[dict[str, str]] = []
         for message in state.get("messages") or []:
             role_name: str = self._messages.message_role(message)
@@ -146,7 +155,9 @@ class ConversationService:
             )
             if tool_calls:
                 continue
-            content: str = TextUtils.short_text(self._messages.message_text(message), MAX_ROUTER_HISTORY_CHARS)
+            content: str = TextUtils.short_text(
+                self._messages.message_text(message), MAX_ROUTER_HISTORY_CHARS
+            )
             if not content:
                 continue
             if role_name in {"human", "user"}:

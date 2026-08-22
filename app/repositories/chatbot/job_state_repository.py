@@ -64,7 +64,8 @@ class JobStateRepository:
                 return selected
         return results
 
-    def build_active_job_goal(self,
+    def build_active_job_goal(
+        self,
         *,
         source: str,
         role_constraints: list[str],
@@ -92,11 +93,9 @@ class JobStateRepository:
             "invalidation_reason": invalidation_reason,
         }
 
-
     def active_job_goal(self, state: ConversationState) -> dict[str, Any] | None:
         value: Any = self._state.jobs_bucket(state).get("active_job_goal")
         return dict(value) if isinstance(value, dict) else None
-
 
     def pending_match_request(self, state: ConversationState) -> dict[str, Any] | None:
         value: Any = self._state.jobs_bucket(state).get("pending_match")
@@ -120,7 +119,9 @@ class JobStateRepository:
     def job_results_for_display(self, state: ConversationState) -> list[dict[str, Any]]:
         jobs_state: dict[str, Any] = self._state.jobs_bucket(state)
         active_keys: Any = jobs_state.get("active_job_keys")
-        selected_keys: Any = self._state.selection_bucket(state).get("selected_job_keys")
+        selected_keys: Any = self._state.selection_bucket(state).get(
+            "selected_job_keys"
+        )
         if (isinstance(active_keys, list) and active_keys) or (
             isinstance(selected_keys, list) and selected_keys
         ):
