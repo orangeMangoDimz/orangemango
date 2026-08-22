@@ -81,7 +81,7 @@ class Database:
         )
 
     @classmethod
-    def from_environment(cls) -> Database:
+    def from_env(cls) -> Database:
         return cls()
 
     @asynccontextmanager

@@ -122,7 +122,7 @@ def get_chat_service() -> ChatService:
     global _chat_service
     if _chat_service is None:
         try:
-            _chat_service = ChatService.from_environment()
+            _chat_service = ChatService.from_env()
         except (ChatConfigurationError, DatabaseConfigurationError) as exc:
             raise HTTPException(
                 status_code=503,
@@ -184,7 +184,7 @@ async def healthz() -> HealthResponse:
     tags=[CHAT_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def post_message(
+async def message(
     request: MessageRequest,
     service: ChatService = Depends(get_chat_service),
 ) -> AcceptedMessageResponse:
@@ -208,7 +208,7 @@ async def post_message(
     tags=[CV_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def upload_cv(
+async def cv(
     file: UploadFile = File(...),
     service: CvService = Depends(get_cv_service),
 ) -> CvUploadResponse:
@@ -241,7 +241,7 @@ async def upload_cv(
     tags=[CV_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def process_cv(
+async def cv_extract_text(
     cv_id: UUID,
     service: CvService = Depends(get_cv_service),
 ) -> CvProcessResponse:
@@ -270,7 +270,7 @@ async def process_cv(
     tags=[CV_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def start_cv_extraction(
+async def cv_extract(
     cv_id: UUID,
     request: CvExtractionRequest,
     service: CvService = Depends(get_cv_service),
@@ -299,7 +299,7 @@ async def start_cv_extraction(
     tags=[CV_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def get_cv_extraction(
+async def cv_extractions(
     extraction_id: UUID,
     service: CvService = Depends(get_cv_service),
 ) -> CvExtractionResponse:
@@ -325,7 +325,7 @@ async def get_cv_extraction(
     tags=[EVENT_API_TAG],
     dependencies=[Depends(require_api_token)],
 )
-async def get_events(
+async def events(
     thread_id: str = Query(..., min_length=1, max_length=MAX_THREAD_ID_LENGTH),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     service: ChatService = Depends(get_chat_service),

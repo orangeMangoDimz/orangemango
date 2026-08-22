@@ -18,13 +18,14 @@ from app.config.const.api_res import (
 )
 from app.data.schema.response import AcceptedMessageResponse
 from app.db.session import Database, postgres_checkpointer_url
+from app.graph.chatbot.graph import build_graph
 from app.logger import log_exception, logger
-from app.models.chat_model import ChatModel
+from app.models.chat_model import ChatConfigurationError, ChatModel
 from app.repositories.chat_repository import (
     ChatEvent,
     ChatPersistenceError,
-    ChatRequestBusyError,
     ChatRepository,
+    ChatRequestBusyError,
     ThreadNotFoundError,
 )
 from app.repositories.cv_repository import CvRepository
@@ -99,11 +100,16 @@ class ChatService:
         repository: ChatRepository,
         *,
         database: Database | None = None,
-        provider: str = "openai",
-        model_name: str = "unknown",
+        provider: str,
+        model_name: str,
         chat_model: ChatModel | None = None,
         cv_service: CvService | None = None,
     ) -> None:
+        if not provider.strip():
+            raise ChatConfigurationError("Chat provider is not configured")
+        if not model_name.strip():
+            raise ChatConfigurationError("Chat model name is not configured")
+
         self._repository = repository
         self._database = database
         self._provider = provider
@@ -115,9 +121,9 @@ class ChatService:
         self._checkpointer_stack: AsyncExitStack | None = None
 
     @classmethod
-    def from_environment(cls) -> ChatService:
+    def from_env(cls) -> ChatService:
         model = ChatModel.from_env()
-        database = Database.from_environment()
+        database = Database.from_env()
         repository = ChatRepository(
             graph=None,
             session_factory=database.session_factory,
@@ -159,8 +165,6 @@ class ChatService:
                     AsyncPostgresSaver.from_conn_string(postgres_checkpointer_url())
                 )
                 await checkpointer.setup()
-
-                from app.graph.chatbot.graph import build_graph
 
                 self._repository.graph = build_graph(
                     checkpointer=checkpointer,
