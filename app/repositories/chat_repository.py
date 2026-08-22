@@ -388,6 +388,7 @@ class ChatRepository:
         *,
         last_event_id: int | None = None,
     ) -> AsyncIterator[ChatEvent]:
+        # Find the live thread and prepare buffered events for replay
         async with self._lock:
             record: ThreadRecord | None = self._threads.get(thread_id)
             if record is not None:
@@ -405,6 +406,7 @@ class ChatRepository:
                     and record.events[-1].event_type == "done"
                 )
 
+        # If this process has no live thread, rebuild message/done events from the DB
         if record is None:
             persisted_history = await self.history(thread_id)
             if not persisted_history:
@@ -437,6 +439,7 @@ class ChatRepository:
             return
 
         try:
+            # Replay missed events, then wait for new events until the run is done
             for event in replay:
                 yield event
 
@@ -449,6 +452,7 @@ class ChatRepository:
                 if event.event_type == "done":
                     return
         finally:
+            # Remove this client from the thread's subscribers
             async with self._lock:
                 record = self._threads.get(thread_id)
                 if record is not None:
