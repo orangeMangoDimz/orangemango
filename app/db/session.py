@@ -15,14 +15,14 @@ class DatabaseConfigurationError(RuntimeError):
 
 def _raw_database_url() -> str:
     load_dotenv(override=False)
-    value = os.getenv("DATABASE_URL", "").strip()
+    value: str = os.getenv("DATABASE_URL", "").strip()
     if not value:
         raise DatabaseConfigurationError("DATABASE_URL is not configured")
     return value
 
 
 def _postgres_url(value: str, driver: str) -> str:
-    normalized = value
+    normalized: str = value
     if normalized.startswith("postgres://"):
         normalized = "postgresql://" + normalized.removeprefix("postgres://")
 
@@ -50,7 +50,7 @@ def sync_database_url() -> str:
 
 def postgres_checkpointer_url() -> str:
     """Return a driver-neutral PostgreSQL URL for psycopg-based libraries."""
-    normalized = _raw_database_url()
+    normalized: str = _raw_database_url()
     if normalized.startswith("postgres://"):
         return "postgresql://" + normalized.removeprefix("postgres://")
 
@@ -81,7 +81,7 @@ class Database:
         )
 
     @classmethod
-    def from_environment(cls) -> Database:
+    def from_env(cls) -> Database:
         return cls()
 
     @asynccontextmanager

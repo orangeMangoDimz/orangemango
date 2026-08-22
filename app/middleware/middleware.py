@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
 import math
 import os
+from collections import defaultdict, deque
 from time import monotonic
 
+from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
+
+from app.config.const.api_path import CV_PATH, MESSAGE_PATH
 from app.config.const.api_res import (
     INVALID_RATE_LIMIT_REQUESTS,
     INVALID_RATE_LIMIT_WINDOW,
@@ -16,26 +24,19 @@ from app.config.const.chat import (
     CHAT_RATE_LIMIT_WINDOW_SECONDS,
 )
 from app.logger import log_exception, logger
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
-
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 )
-_RATE_LIMITED_PATH = "/message"
-_CV_PATH_PREFIX = "/cv"
+_RATE_LIMITED_PATH = MESSAGE_PATH
+_CV_PATH_PREFIX = CV_PATH
 _MAX_TRACKED_CLIENTS = 10_000
 
 
 def _get_allowed_origins() -> list[str]:
-    configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    origins = [
+    configured_origins: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins: list[str] = [
         origin.strip() for origin in configured_origins.split(",") if origin.strip()
     ]
     return origins or list(_DEFAULT_CORS_ORIGINS)
@@ -47,12 +48,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        started_at = monotonic()
-        client_ip = request.client.host if request.client else "unknown"
+        started_at: float = monotonic()
+        client_ip: str = request.client.host if request.client else "unknown"
         try:
-            response = await call_next(request)
+            response: Response = await call_next(request)
         except Exception as exc:
-            duration_ms = max(0, round((monotonic() - started_at) * 1000))
+            duration_ms: int = max(0, round((monotonic() - started_at) * 1000))
             logger.opt(exception=exc).error(
                 "Unhandled request failure {method} {path} ({duration_ms}ms) ip={client_ip}",
                 method=request.method,
@@ -62,7 +63,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             raise
 
-        duration_ms = max(0, round((monotonic() - started_at) * 1000))
+        duration_ms: int = max(0, round((monotonic() - started_at) * 1000))
         logger.info(
             "{method} {path} -> {status} ({duration_ms}ms) ip={client_ip}",
             method=request.method,
@@ -113,17 +114,17 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
-        now = monotonic()
+        client_ip: str = request.client.host if request.client else "unknown"
+        now: float = monotonic()
 
         async with self._lock:
-            timestamps = self._request_times[client_ip]
-            cutoff = now - self.window_seconds
+            timestamps: deque[float] = self._request_times[client_ip]
+            cutoff: float = now - self.window_seconds
             while timestamps and timestamps[0] <= cutoff:
                 timestamps.popleft()
 
             if len(timestamps) >= self.max_requests:
-                retry_after = max(
+                retry_after: int = max(
                     1,
                     math.ceil(timestamps[0] + self.window_seconds - now),
                 )
@@ -133,14 +134,14 @@ class ChatRateLimitMiddleware(BaseHTTPMiddleware):
                     path=request.url.path,
                 )
                 return JSONResponse(
-                    status_code=429,
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     content={"detail": TOO_MANY_CHAT_REQUESTS},
                     headers={"Retry-After": str(retry_after)},
                 )
 
             timestamps.append(now)
             if len(self._request_times) > _MAX_TRACKED_CLIENTS:
-                stale_clients = [
+                stale_clients: list[str] = [
                     ip
                     for ip, request_times in self._request_times.items()
                     if not request_times

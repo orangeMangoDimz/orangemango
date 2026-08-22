@@ -15,12 +15,12 @@ class ChatConfigurationError(RuntimeError):
 
 
 def _max_tokens_from_env() -> int:
-    value = os.getenv("OPENAI_MAX_TOKENS", "")
+    value: str = os.getenv("OPENAI_MAX_TOKENS", "")
     if not value.strip():
         return MAX_OUTPUT_TOKENS
 
     try:
-        max_tokens = int(value)
+        max_tokens: int = int(value)
     except ValueError as exc:
         raise ChatConfigurationError(
             "OPENAI_MAX_TOKENS must be a positive integer"

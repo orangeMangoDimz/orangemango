@@ -9,19 +9,19 @@ from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import Result
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.config.const.chat import MAX_EVENT_HISTORY
+from app.config.const.chat import CHAT_REQUEST_ACCEPTED, MAX_EVENT_HISTORY
+from app.db.models import ChatMessage as ChatMessageRecord
+from app.db.models import ChatRequest as ChatRequestRecord
+from app.db.models import ChatResponse as ChatResponseRecord
 from app.db.models import (
-    ChatMessage as ChatMessageRecord,
-    ChatRequest as ChatRequestRecord,
-    ChatResponse as ChatResponseRecord,
     ChatThread,
-    CvExtraction as CvExtractionRecord,
 )
-
+from app.db.models import CvExtraction as CvExtractionRecord
 
 EventType = Literal["state", "message", "cv_extraction", "error", "done"]
 
@@ -79,15 +79,18 @@ class ChatRepository:
         model: str,
     ) -> UUID:
         async with self._lock:
-            record = self._threads.setdefault(thread_id, ThreadRecord())
+            record: ThreadRecord = self._threads.setdefault(thread_id, ThreadRecord())
             if record.active:
                 raise ChatRequestBusyError(thread_id)
 
-            now = datetime.now(UTC)
+            now: datetime = datetime.now(UTC)
             try:
                 async with self._session_factory() as session:
                     async with session.begin():
-                        thread = await session.get(ChatThread, thread_id)
+                        thread: ChatThread | None = await session.get(
+                            ChatThread,
+                            thread_id,
+                        )
                         if thread is None:
                             session.add(
                                 ChatThread(
@@ -101,7 +104,7 @@ class ChatRepository:
                             thread.status = "active"
                             thread.updated_at = now
 
-                        active_cv = await session.execute(
+                        active_cv: Result[Any] = await session.execute(
                             select(CvExtractionRecord.id)
                             .where(
                                 CvExtractionRecord.thread_id == thread_id,
@@ -112,17 +115,17 @@ class ChatRepository:
                         if active_cv.scalar_one_or_none() is not None:
                             raise ChatRequestBusyError(thread_id)
 
-                        request = ChatRequestRecord(
+                        request: ChatRequestRecord = ChatRequestRecord(
                             thread_id=thread_id,
                             message=message,
                             provider=provider,
                             model=model,
-                            status="accepted",
+                            status=CHAT_REQUEST_ACCEPTED,
                             created_at=now,
                         )
                         session.add(request)
                         await session.flush()
-                        next_sequence = await self._next_message_sequence(
+                        next_sequence: int = await self._next_message_sequence(
                             session,
                             thread_id,
                         )
@@ -153,15 +156,18 @@ class ChatRepository:
     async def begin_activity(self, thread_id: str) -> None:
         """Reserve a thread for a non-chat operation such as CV extraction."""
         async with self._lock:
-            record = self._threads.setdefault(thread_id, ThreadRecord())
+            record: ThreadRecord = self._threads.setdefault(thread_id, ThreadRecord())
             if record.active:
                 raise ChatRequestBusyError(thread_id)
 
-            now = datetime.now(UTC)
+            now: datetime = datetime.now(UTC)
             try:
                 async with self._session_factory() as session:
                     async with session.begin():
-                        thread = await session.get(ChatThread, thread_id)
+                        thread: ChatThread | None = await session.get(
+                            ChatThread,
+                            thread_id,
+                        )
                         if thread is None:
                             session.add(
                                 ChatThread(
@@ -175,12 +181,12 @@ class ChatRepository:
                             thread.status = "active"
                             thread.updated_at = now
 
-                        active_chat = await session.execute(
+                        active_chat: Result[Any] = await session.execute(
                             select(ChatRequestRecord.id)
                             .where(
                                 ChatRequestRecord.thread_id == thread_id,
                                 ChatRequestRecord.status.in_(
-                                    ("accepted", "processing")
+                                    (CHAT_REQUEST_ACCEPTED, "processing")
                                 ),
                             )
                             .limit(1)
@@ -188,7 +194,7 @@ class ChatRepository:
                         if active_chat.scalar_one_or_none() is not None:
                             raise ChatRequestBusyError(thread_id)
 
-                        active_cv = await session.execute(
+                        active_cv: Result[Any] = await session.execute(
                             select(CvExtractionRecord.id)
                             .where(
                                 CvExtractionRecord.thread_id == thread_id,
@@ -222,7 +228,7 @@ class ChatRepository:
         """Return the ordered transcript for internal history/replay use."""
         try:
             async with self._session_factory() as session:
-                result = await session.execute(
+                result: Result[Any] = await session.execute(
                     select(ChatMessageRecord)
                     .where(ChatMessageRecord.thread_id == thread_id)
                     .order_by(ChatMessageRecord.sequence)
@@ -245,7 +251,7 @@ class ChatRepository:
             if record is None:
                 raise ThreadNotFoundError(thread_id)
 
-            event = ChatEvent(record.next_event_id, event_type, data)
+            event: ChatEvent = ChatEvent(record.next_event_id, event_type, data)
             record.next_event_id += 1
             record.events.append(event)
             if event_type == "done":
@@ -262,11 +268,14 @@ class ChatRepository:
                 record.request_id = None
 
     async def mark_processing(self, request_id: UUID) -> None:
-        now = datetime.now(UTC)
+        now: datetime = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    request = await session.get(ChatRequestRecord, request_id)
+                    request: ChatRequestRecord | None = await session.get(
+                        ChatRequestRecord,
+                        request_id,
+                    )
                     if request is None:
                         raise ChatPersistenceError("Chat request was not found")
                     request.status = "processing"
@@ -300,7 +309,7 @@ class ChatRepository:
         error_message: str,
         request_status: str = "failed",
     ) -> None:
-        response_status = "partial" if content else "failed"
+        response_status: str = "partial" if content else "failed"
         await self._finish_request(
             request_id,
             request_status=request_status,
@@ -320,11 +329,14 @@ class ChatRepository:
         error_message: str | None,
         latency_ms: int | None,
     ) -> None:
-        now = datetime.now(UTC)
+        now: datetime = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    request = await session.get(ChatRequestRecord, request_id)
+                    request: ChatRequestRecord | None = await session.get(
+                        ChatRequestRecord,
+                        request_id,
+                    )
                     if request is None:
                         raise ChatPersistenceError("Chat request was not found")
 
@@ -342,7 +354,7 @@ class ChatRepository:
                     )
 
                     if content and content.strip():
-                        next_sequence = await self._next_message_sequence(
+                        next_sequence: int = await self._next_message_sequence(
                             session,
                             request.thread_id,
                         )
@@ -357,7 +369,10 @@ class ChatRepository:
                             )
                         )
 
-                    thread = await session.get(ChatThread, request.thread_id)
+                    thread: ChatThread | None = await session.get(
+                        ChatThread,
+                        request.thread_id,
+                    )
                     if thread is not None:
                         thread.updated_at = now
         except ChatPersistenceError:
@@ -373,29 +388,31 @@ class ChatRepository:
         *,
         last_event_id: int | None = None,
     ) -> AsyncIterator[ChatEvent]:
+        # Find the live thread and prepare buffered events for replay
         async with self._lock:
-            record = self._threads.get(thread_id)
+            record: ThreadRecord | None = self._threads.get(thread_id)
             if record is not None:
-                replay = [
+                replay: list[ChatEvent] = [
                     event
                     for event in record.events
                     if last_event_id is None or event.event_id > last_event_id
                 ]
                 queue: asyncio.Queue[ChatEvent] = asyncio.Queue()
                 record.subscribers.add(queue)
-                active = record.active
-                finished = (
+                active: bool = record.active
+                finished: bool = (
                     not active
                     and bool(record.events)
                     and record.events[-1].event_type == "done"
                 )
 
+        # If this process has no live thread, rebuild message/done events from the DB
         if record is None:
             persisted_history = await self.history(thread_id)
             if not persisted_history:
                 raise ThreadNotFoundError(thread_id)
 
-            event_id = 1
+            event_id: int = 1
             for message in persisted_history:
                 if message["role"] != "assistant":
                     continue
@@ -422,6 +439,7 @@ class ChatRepository:
             return
 
         try:
+            # Replay missed events, then wait for new events until the run is done
             for event in replay:
                 yield event
 
@@ -434,6 +452,7 @@ class ChatRepository:
                 if event.event_type == "done":
                     return
         finally:
+            # Remove this client from the thread's subscribers
             async with self._lock:
                 record = self._threads.get(thread_id)
                 if record is not None:
@@ -444,7 +463,7 @@ class ChatRepository:
         session: AsyncSession,
         thread_id: str,
     ) -> int:
-        result = await session.execute(
+        result: Result[Any] = await session.execute(
             select(
                 func.coalesce(
                     func.max(ChatMessageRecord.sequence),

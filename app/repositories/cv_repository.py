@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import hashlib
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -47,7 +47,7 @@ class CvRepository:
         content: bytes,
         extracted_text: str | None = None,
     ) -> CvDocument:
-        record = CvDocument(
+        record: CvDocument = CvDocument(
             filename=filename,
             storage_key="pending",
             sha256=hashlib.sha256(content).hexdigest(),
@@ -69,7 +69,7 @@ class CvRepository:
     async def get_document(self, cv_id: UUID) -> CvDocument:
         try:
             async with self._session_factory() as session:
-                record = await session.get(CvDocument, cv_id)
+                record: CvDocument | None = await session.get(CvDocument, cv_id)
         except SQLAlchemyError as exc:
             raise CvPersistenceError("Unable to load CV document") from exc
         if record is None:
@@ -85,7 +85,7 @@ class CvRepository:
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    record = await session.get(CvDocument, cv_id)
+                    record: CvDocument | None = await session.get(CvDocument, cv_id)
                     if record is None:
                         raise CvNotFoundError(str(cv_id))
                     record.extracted_text = extracted_text
@@ -100,7 +100,7 @@ class CvRepository:
         cv_id: UUID,
         thread_id: str | None,
     ) -> CvExtraction:
-        record = CvExtraction(
+        record: CvExtraction = CvExtraction(
             document_id=cv_id,
             thread_id=thread_id,
             version=0,
@@ -127,11 +127,14 @@ class CvRepository:
         return record
 
     async def mark_processing(self, extraction_id: UUID) -> None:
-        now = datetime.now(UTC)
+        now: datetime = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    record = await session.get(CvExtraction, extraction_id)
+                    record: CvExtraction | None = await session.get(
+                        CvExtraction,
+                        extraction_id,
+                    )
                     if record is None:
                         raise CvExtractionNotFoundError(str(extraction_id))
                     record.status = "processing"
@@ -148,22 +151,25 @@ class CvRepository:
         result: dict[str, Any],
         warnings: list[str],
     ) -> None:
-        now = datetime.now(UTC)
+        now: datetime = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    record = await session.get(CvExtraction, extraction_id)
+                    record: CvExtraction | None = await session.get(
+                        CvExtraction,
+                        extraction_id,
+                    )
                     if record is None:
                         raise CvExtractionNotFoundError(str(extraction_id))
                     record.status = "completed"
                     record.extraction_result = result
-                    matching_features = result.get("matching_features")
+                    matching_features: Any = result.get("matching_features")
                     record.matching_features = (
                         matching_features if isinstance(matching_features, dict) else {}
                     )
                     record.warnings = warnings
                     record.errors = []
-                    validation_status = result.get("validation_status")
+                    validation_status: Any = result.get("validation_status")
                     record.validation_status = (
                         validation_status
                         if isinstance(validation_status, str)
@@ -182,11 +188,14 @@ class CvRepository:
         *,
         error_message: str,
     ) -> None:
-        now = datetime.now(UTC)
+        now: datetime = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
-                    record = await session.get(CvExtraction, extraction_id)
+                    record: CvExtraction | None = await session.get(
+                        CvExtraction,
+                        extraction_id,
+                    )
                     if record is None:
                         raise CvExtractionNotFoundError(str(extraction_id))
                     record.status = "failed"
@@ -200,7 +209,10 @@ class CvRepository:
     async def get_extraction(self, extraction_id: UUID) -> CvExtraction:
         try:
             async with self._session_factory() as session:
-                record = await session.get(CvExtraction, extraction_id)
+                record: CvExtraction | None = await session.get(
+                    CvExtraction,
+                    extraction_id,
+                )
         except SQLAlchemyError as exc:
             raise CvPersistenceError("Unable to load CV extraction") from exc
         if record is None:

@@ -1,9 +1,10 @@
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
 from app.config.const.api_res import (
     MESSAGE_MUST_NOT_BE_BLANK,
     THREAD_ID_MUST_NOT_BE_BLANK,
 )
 from app.config.const.chat import MAX_MESSAGE_LENGTH, MAX_THREAD_ID_LENGTH
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class MessageRequest(BaseModel):
@@ -13,7 +14,7 @@ class MessageRequest(BaseModel):
     @field_validator("thread_id", "message")
     @classmethod
     def validate_text(cls, value: str, info: ValidationInfo) -> str:
-        normalized = value.strip()
+        normalized: str = value.strip()
         if not normalized:
             if info.field_name == "thread_id":
                 raise ValueError(THREAD_ID_MUST_NOT_BE_BLANK)
@@ -27,7 +28,7 @@ class CvExtractionRequest(BaseModel):
     @field_validator("thread_id")
     @classmethod
     def validate_thread_id(cls, value: str) -> str:
-        normalized = value.strip()
+        normalized: str = value.strip()
         if not normalized:
             raise ValueError(THREAD_ID_MUST_NOT_BE_BLANK)
         return normalized

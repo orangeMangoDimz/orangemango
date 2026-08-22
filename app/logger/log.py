@@ -4,7 +4,7 @@ import logging
 import sys
 import threading
 import traceback
-from types import TracebackType
+from types import FrameType, TracebackType
 from typing import Any
 from uuid import uuid4
 
@@ -16,7 +16,6 @@ from starlette.requests import Request
 
 from app.db.models import AppErrorLog
 from app.db.session import DatabaseConfigurationError, sync_database_url
-
 
 _CONFIGURED = False
 _ENGINE: Engine | None = None
@@ -37,8 +36,8 @@ class _InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        frame = logging.currentframe()
-        depth = 2
+        frame: FrameType | None = logging.currentframe()
+        depth: int = 2
         while frame is not None and frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1
@@ -137,19 +136,21 @@ def persist_error_log(
     request_id: str | None = None,
     context: dict[str, Any] | None = None,
 ) -> None:
+    exception_type: str | None
+    formatted_traceback: str | None
     exception_type, formatted_traceback = _format_traceback(exc, exc_info)
-    request_fields = _request_fields(request)
-    normalized_level = level.upper()
+    request_fields: dict[str, Any] = _request_fields(request)
+    normalized_level: str = level.upper()
     if normalized_level not in {"ERROR", "CRITICAL"}:
         normalized_level = "ERROR"
 
     try:
-        engine = _get_engine()
+        engine: Engine = _get_engine()
     except DatabaseConfigurationError:
         logger.warning("Skipping error log persistence; DATABASE_URL is not configured")
         return
 
-    row = AppErrorLog(
+    row: AppErrorLog = AppErrorLog(
         id=uuid4(),
         level=normalized_level,
         message=message,
@@ -186,7 +187,7 @@ def log_exception(
     level: str = "ERROR",
     **context: Any,
 ) -> None:
-    bound = logger.bind(
+    bound: Any = logger.bind(
         thread_id=thread_id,
         request_id=request_id,
         status_code=status_code,

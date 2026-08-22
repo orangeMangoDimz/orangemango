@@ -1,0 +1,7 @@
+HEALTH_PATH = "/healthz"
+MESSAGE_PATH = "/message"
+CV_PATH = "/cv"
+CV_EXTRACT_TEXT_PATH = "/cv/{cv_id}/extract-text"
+CV_EXTRACT_PATH = "/cv/{cv_id}/extract"
+CV_EXTRACTIONS_PATH = "/cv/extractions/{extraction_id}"
+EVENTS_PATH = "/events"

@@ -2,10 +2,9 @@
 
 from typing import Sequence, Union
 
-from alembic import context, op
 import sqlalchemy as sa
+from alembic import context, op
 from sqlalchemy.dialects import postgresql
-
 
 revision: str = "0004_cv_documents_extract"
 down_revision: Union[str, None] = "0003_app_error_logs"

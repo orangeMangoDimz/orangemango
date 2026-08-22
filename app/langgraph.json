@@ -1,0 +1,7 @@
+{
+  "dependencies": [".."],
+  "graphs": {
+    "cv-job-chatbot": "./graph/chatbot/graph.py:graph"
+  },
+  "env": "../.env"
+}
