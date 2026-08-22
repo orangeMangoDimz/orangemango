@@ -22,9 +22,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: isort
+        name: Sort Python imports
+        entry: isort
+        language: python
+        additional_dependencies: [isort==8.0.1]
+        args: [--profile=black, --line-length=500]
+        files: ^app/.*\.py$
       - id: no-regex
         name: Reject regular-expression usage
-        entry: uv run python scripts/check_no_regex.py
+        entry: uv run python "scripts/utils/check_no_regex copy.py"
         language: system
         types: [python]
       - id: compile-python
