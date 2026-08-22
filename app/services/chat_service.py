@@ -160,7 +160,7 @@ class ChatService:
                 )
                 await checkpointer.setup()
 
-                from studio.chatbot.graph import build_graph
+                from app.graph.chatbot.graph import build_graph
 
                 self._repository.graph = build_graph(
                     checkpointer=checkpointer,
