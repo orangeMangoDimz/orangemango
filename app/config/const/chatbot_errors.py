@@ -23,6 +23,9 @@ ERROR_PLAN_VALIDATION_FAILED_PREFIX: str = "plan_validation_failed:"
 ERROR_RESPONSE_MODEL_FAILED: str = "response_model_failed:"
 ERROR_DUPLICATE_ACTION: str = "duplicate_action:"
 ERROR_UNKNOWN_WORKFLOW_ACTION: str = "unknown_workflow_action:"
+ERROR_PARENT_PLANNER_FAILED_PREFIX: str = "parent_planner_failed:"
+ERROR_CV_PLANNER_FAILED_PREFIX: str = "cv_planner_failed:"
+ERROR_JOB_PLANNER_FAILED_PREFIX: str = "job_planner_failed:"
 
 # [CV errors]
 ERROR_CV_UPLOAD_REQUIRED: str = "cv_upload_required"

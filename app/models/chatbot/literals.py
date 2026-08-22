@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Literal
 
+ParentTarget = Literal["cv_subagent", "job_subagent", "respond"]
+CvAction = Literal["extract_cv", "review_cv", "compare_cvs"]
+JobAction = Literal["scrape_jobs", "extract_job", "match_jobs"]
+EventStatus = Literal["success", "pending", "failed"]
+
 RouteName = Literal[
     "respond",
     "extract_cv",

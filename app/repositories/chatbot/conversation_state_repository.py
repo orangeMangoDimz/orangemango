@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from app.config.const.chatbot import AGENT_ACTIONS, REQUEST_VALUE_KEYS
+from app.config.const.chatbot import REQUEST_VALUE_KEYS
 from app.models.chatbot.literals import JobResponse, JobTask
-from app.models.chatbot.schemas import ConversationMemory
-from app.models.chatbot.state import ConversationState, ExecutionStepState
+from app.models.chatbot.state import ConversationState
 from app.services.chatbot.message_reader import MessageReader
 
 
@@ -195,28 +194,6 @@ class ConversationStateRepository:
         value: Any = state.get("jobs")
         return dict(value) if isinstance(value, dict) else {}
 
-    def action_results_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value: Any = state.get("action_results")
-        return dict(value) if isinstance(value, dict) else {}
-
-    def completed_actions(self, state: ConversationState) -> list[str]:
-        """Return the valid agent actions completed during this user message."""
-        return [
-            action
-            for action in self.plan_bucket(state).get("completed_actions") or []
-            if isinstance(action, str) and action in AGENT_ACTIONS
-        ]
-
-    def execution_bucket(self, state: ConversationState) -> dict[str, Any]:
-        value: Any = state.get("execution")
-        return dict(value) if isinstance(value, dict) else {}
-
-    def execution_steps(self, state: ConversationState) -> list[ExecutionStepState]:
-        value: Any = self.execution_bucket(state).get("steps")
-        if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, dict)]
-
     def default_request_fields(self) -> dict[str, Any]:
         return {
             "goal": {"name": "general_question", "reason": "", "confidence": 1.0},
@@ -257,22 +234,6 @@ class ConversationStateRepository:
     def default_selection_fields(self) -> dict[str, Any]:
         """Compatibility view for legacy helpers; active state uses request/targets."""
         return {**self.default_request_fields(), **self.default_target_fields()}
-
-    def conversation_memory(self, state: ConversationState) -> dict[str, Any]:
-        raw: Any = state.get("conversation_memory")
-        if not isinstance(raw, dict):
-            return {}
-        try:
-            return ConversationMemory.model_validate(raw).model_dump()
-        except Exception:
-            return {}
-
-    def conversation_memory_cursor(self, state: ConversationState) -> int:
-        raw: Any = state.get("conversation_memory_cursor", 0)
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 0
 
     def last_user_text(self, state: ConversationState) -> str:
         for message in reversed(state.get("messages") or []):

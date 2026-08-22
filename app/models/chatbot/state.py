@@ -11,19 +11,7 @@ from typing import Annotated, Any, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-from app.models.chatbot.literals import (
-    AgentAction,
-    CvTargetScope,
-    ExecutionStatus,
-    GoalName,
-    JobResponse,
-    JobSource,
-    JobTargetScope,
-    JobTask,
-    ReviewMode,
-    RoleSource,
-    RouteName,
-)
+from app.models.chatbot.literals import EventStatus
 from app.services.chatbot.upload_parser import UploadParser
 
 
@@ -47,184 +35,135 @@ def merge_maps(
     return {**(left or {}), **(right or {})}
 
 
-class RoutingGoalState(TypedDict, total=False):
-    name: GoalName
-    reason: str
-    confidence: float
-
-
-class RoutingJobState(TypedDict, total=False):
-    task: JobTask
-    response: JobResponse
-    source: JobSource
-    input: str | None
-    refresh: bool
-    scrape: dict[str, Any]
-
-
-class RoutingRoleState(TypedDict, total=False):
-    constraints: list[str]
-    evidence: str | None
-    source: RoleSource
-    candidates: list[dict[str, Any]]
-
-
-class RoutingAssessmentState(TypedDict, total=False):
-    requested: bool
-    detail_level: str
-
-
-class RoutingScoreState(TypedDict, total=False):
-    requested: bool
-    visible: bool
-
-
-class RoutingReviewState(TypedDict, total=False):
-    target_role: str | None
-    mode: ReviewMode
-    focus: str | None
-    reason: str | None
-
-
-class RoutingCvState(TypedDict, total=False):
-    text_needed: bool
-    features_needed: bool
-
-
-class RoutingContextState(TypedDict, total=False):
-    follow_up: bool
-
-
-class RoutingRequestState(TypedDict, total=False):
-    goal: RoutingGoalState
-    job: RoutingJobState
-    role: RoutingRoleState
-    assessment: RoutingAssessmentState
-    score: RoutingScoreState
-    review: RoutingReviewState
-    cv: RoutingCvState
-    context: RoutingContextState
-
-
-class RoutingCvTargetsState(TypedDict, total=False):
-    scope: CvTargetScope
-    ids: list[str]
-
-
-class RoutingJobTargetsState(TypedDict, total=False):
-    scope: JobTargetScope
-    keys: list[str]
-
-
-class RoutingTargetsState(TypedDict, total=False):
-    cv: RoutingCvTargetsState
-    job: RoutingJobTargetsState
-    unresolved_references: list[str]
-    ambiguous: bool
-
-
-class RoutingPlanState(TypedDict, total=False):
-    action: RouteName
-    reason: str
-    validation: str
-    validation_error: str | None
-    planned_stages: list[str]
-    policy_reason: str
-    active_goal_id: str | None
-    completed_actions: list[str]
-
-
-class RoutingState(TypedDict, total=False):
-    request: RoutingRequestState
-    targets: RoutingTargetsState
-    plan: RoutingPlanState
-
-
-# ExecutionStatus is defined in app.models.chatbot.literals and imported above.
-
-
-class ExecutionNoteState(TypedDict):
+class TimelineEventState(TypedDict, total=False):
+    order: int
+    node: str
+    status: EventStatus
     summary: str
+    args: dict[str, Any]
+
+
+class PlanStepState(TypedDict):
+    node: str
+    expected: str
     reason: str
 
 
-class ExecutionFromNodeState(TypedDict):
-    graph: str
-    node: str
-    uses: list[str]
-    note: ExecutionNoteState
-    output: dict[str, Any]
+class ParentIntentState(TypedDict, total=False):
+    query: str
+    goal: str
+    cv_ids: list[str]
+    job_ids: list[str]
 
 
-class ExecutionToNodeState(TypedDict):
-    graph: str
-    node: str
-    uses: list[str]
-    note: ExecutionNoteState
-    args: dict[str, Any]
-    result: dict[str, Any]
+class PlannerDependencyState(ParentIntentState, total=False):
+    source: str
+    expected: str
+    reason: str
 
 
-class ExecutionContextState(TypedDict, total=False):
-    args_source: RoleSource
-    source_reference: dict[str, Any]
+class ValidationEntryState(TypedDict):
+    code: str
+    message: str
 
 
-ExecutionStepState = TypedDict(
-    "ExecutionStepState",
-    {
-        "index": int,
-        "action": AgentAction,
-        "status": ExecutionStatus,
-        "from": ExecutionFromNodeState,
-        "to": ExecutionToNodeState,
-        "context": ExecutionContextState,
-        "error": str | None,
-    },
-)
+class ValidationState(TypedDict):
+    passed: list[ValidationEntryState]
+    errors: list[ValidationEntryState]
 
 
-class ExecutionState(TypedDict):
-    steps: list[ExecutionStepState]
+class ParentArgsState(TypedDict):
+    cv: list[dict[str, Any]]
+    job: list[dict[str, Any]]
 
 
-def merge_routing_maps(
-    left: RoutingState | None,
-    right: RoutingState | None,
-) -> RoutingState:
-    merged: dict[str, Any] = dict(left or {})
-    for section, update in (right or {}).items():
-        if isinstance(update, dict) and isinstance(merged.get(section), dict):
-            merged[section] = {**merged[section], **update}
-        else:
-            merged[section] = update
-    return merged  # type: ignore[return-value]
+class ParentPlannerInputState(TypedDict, total=False):
+    messages: Annotated[list[AnyMessage], add_chat_messages]
+    timeline: list[TimelineEventState]
+    args: ParentArgsState
+    validation: ValidationState
+
+
+class CvSubagentArgsState(TypedDict, total=False):
+    cv: list[dict[str, Any]]
+    need_to_extract: int
+    cv_ids: list[str]
+    review_mode: str
+    review_focus: str | None
+    target_role: str | None
+
+
+class CvSubagentState(TypedDict, total=False):
+    timeline: list[TimelineEventState]
+    dependency: PlannerDependencyState
+    plan: list[PlanStepState]
+    args: CvSubagentArgsState
+    validation: ValidationState
+
+
+class CvActionState(TypedDict, total=False):
+    timeline: list[TimelineEventState]
+    args: CvSubagentArgsState
+    validation: ValidationState
+
+
+class JobSubagentArgsState(TypedDict, total=False):
+    cv: list[dict[str, Any]]
+    job: list[dict[str, Any]]
+    need_to_search: bool
+    need_to_extract: int
+    cv_ids: list[str]
+    job_ids: list[str]
+    source: str
+    response: str
+    refresh: bool
+    pasted_content: str | None
+    show_score: bool
+    search: dict[str, Any]
+    scrape_total: int
+    scrape_truncated: bool
+    active_job_keys: list[str]
+    matches: list[dict[str, Any]]
+    active_job_goal: dict[str, Any]
+    pending_match: dict[str, Any] | None
+
+
+class JobSubagentState(TypedDict, total=False):
+    timeline: list[TimelineEventState]
+    dependency: PlannerDependencyState
+    plan: list[PlanStepState]
+    args: JobSubagentArgsState
+    validation: ValidationState
+
+
+class JobActionState(TypedDict, total=False):
+    timeline: list[TimelineEventState]
+    args: JobSubagentArgsState
+    validation: ValidationState
+
+
+class FinalResponseArgsState(TypedDict):
+    cv: list[dict[str, Any]]
+    job: list[dict[str, Any]]
+
+
+class FinalResponseState(TypedDict):
+    timeline: list[TimelineEventState]
+    args: FinalResponseArgsState
+    validation: ValidationState
 
 
 class ConversationState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_chat_messages]
-    pending_cv_upload: dict[str, Any] | None
-    pending_cv_uploads: list[dict[str, Any]] | None
-    input_error: bool
-    cv: Annotated[dict[str, Any], merge_maps]
-    routing: Annotated[RoutingState, merge_routing_maps]
-    # Transitional top-level target/plan buckets are read-only fallbacks.
-    targets: dict[str, Any]
-    plan: dict[str, Any]
-    # Legacy non-request routing buckets are retained for old helpers.
-    router: Annotated[dict[str, Any], merge_maps]
-    selection: Annotated[dict[str, Any], merge_maps]
-    jobs: Annotated[dict[str, Any], merge_maps]
-    action_results: Annotated[dict[str, Any], merge_maps]
-    execution: Annotated[ExecutionState, merge_maps]
-    conversation_memory: Annotated[dict[str, Any], merge_maps]
-    conversation_memory_cursor: int
     response: str | None
     job_list: list[dict[str, Any]]
-    errors: list[str]
+    timeline: list[TimelineEventState]
+    intent: ParentIntentState
+    plan: list[PlanStepState]
+    args: Annotated[ParentArgsState, merge_maps]
+    validation: ValidationState
+    response_projection: Annotated[FinalResponseState, merge_maps]
 
 
 class StudioInput(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_chat_messages]
-    pending_cv_upload: dict[str, Any] | None
-    pending_cv_uploads: list[dict[str, Any]] | None
