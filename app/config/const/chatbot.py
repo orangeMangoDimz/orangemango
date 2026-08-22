@@ -55,21 +55,10 @@ ENV_CONTEXT_PROMPT_RESERVE_TOKENS: str = "OPENAI_CONTEXT_PROMPT_RESERVE_TOKENS"
 MAX_AGENT_ACTIONS: int = 4
 MAX_CV_DOCUMENTS: int = 5
 MAX_ACTION_RESULT_CHARS: int = 6000
-SEARCH_RESULT_TTL_SECONDS: int = 24 * 60 * 60
-MIN_JOB_INTENT_CONFIDENCE: float = 0.75
 PDF_UPLOAD_MARKER: str = "[PDF CV uploaded separately]"
 
-# [Graph names]
-GRAPH_CHATBOT: str = "chatbot"
-GRAPH_CV_SUBAGENT: str = "cv_subagent"
-GRAPH_JOB_SUBAGENT: str = "job_subagent"
-
 # [Main graph nodes]
-NODE_INGEST_INPUT: str = "ingest_input"
-NODE_SUMMARIZE_CONVERSATION: str = "summarize_conversation"
-NODE_REQUEST_ROUTER: str = "request_router"
-NODE_WORKFLOW_PLANNER: str = "workflow_planner"
-NODE_VALIDATE_PLAN: str = "validate_plan"
+NODE_PARENT_PLANNER: str = "parent_planner"
 NODE_CV_SUBAGENT: str = "cv_subagent"
 NODE_JOB_SUBAGENT: str = "job_subagent"
 NODE_RESPOND: str = "respond"
@@ -78,12 +67,13 @@ NODE_RESPOND: str = "respond"
 NODE_EXTRACT_CV: str = "extract_cv"
 NODE_REVIEW_CV: str = "review_cv"
 NODE_COMPARE_CVS: str = "compare_cvs"
-NODE_MISSING_CV: str = "missing_cv"
+NODE_CV_PLANNER: str = "cv_planner"
 
 # [Job subagent nodes]
 NODE_SCRAPE_JOBS: str = "scrape_jobs"
-NODE_EXTRACT_PASTED_JOB: str = "extract_pasted_job"
+NODE_EXTRACT_PASTED_JOB: str = "extract_job"
 NODE_MATCH_JOBS: str = "match_jobs"
+NODE_JOB_PLANNER: str = "job_planner"
 
 # [Route and action names]
 ROUTE_RESPOND: str = "respond"
@@ -97,31 +87,6 @@ ROUTE_MATCH_JOBS: str = "match_jobs"
 # [Conditional edge sentinel]
 BRANCH_END: str = "end"
 
-# [Planned job stages]
-STAGE_SCRAPE_JOBS: str = "scrape_jobs"
-STAGE_EXTRACT_JOB: str = "extract_job"
-STAGE_MATCH_JOBS: str = "match_jobs"
-
-# [Action sets]
-AGENT_ACTIONS: frozenset[str] = frozenset(
-    {
-        ROUTE_EXTRACT_CV,
-        ROUTE_REVIEW_CV,
-        ROUTE_COMPARE_CVS,
-        ROUTE_EXTRACT_JOB,
-        ROUTE_SEARCH_JOBS,
-        ROUTE_MATCH_JOBS,
-    }
-)
-USER_FACING_ACTIONS: frozenset[str] = frozenset(
-    {
-        ROUTE_REVIEW_CV,
-        ROUTE_COMPARE_CVS,
-        ROUTE_EXTRACT_JOB,
-        ROUTE_SEARCH_JOBS,
-        ROUTE_MATCH_JOBS,
-    }
-)
 CV_FEATURE_INTENTS: frozenset[str] = frozenset(
     {
         ROUTE_EXTRACT_CV,
@@ -130,52 +95,6 @@ CV_FEATURE_INTENTS: frozenset[str] = frozenset(
         ROUTE_MATCH_JOBS,
     }
 )
-
-# [Execution trace wiring]
-EXECUTION_DESTINATIONS: dict[str, tuple[str, str]] = {
-    ROUTE_EXTRACT_CV: (GRAPH_CV_SUBAGENT, NODE_EXTRACT_CV),
-    ROUTE_REVIEW_CV: (GRAPH_CV_SUBAGENT, NODE_REVIEW_CV),
-    ROUTE_COMPARE_CVS: (GRAPH_CV_SUBAGENT, NODE_COMPARE_CVS),
-    ROUTE_EXTRACT_JOB: (GRAPH_JOB_SUBAGENT, NODE_EXTRACT_PASTED_JOB),
-    ROUTE_SEARCH_JOBS: (GRAPH_JOB_SUBAGENT, NODE_SCRAPE_JOBS),
-    ROUTE_MATCH_JOBS: (GRAPH_JOB_SUBAGENT, NODE_MATCH_JOBS),
-}
-EXECUTION_NODE_USES: dict[tuple[str, str], list[str]] = {
-    (GRAPH_CHATBOT, NODE_VALIDATE_PLAN): [
-        "routing.request",
-        "routing.targets",
-        "routing.plan",
-        "jobs.scrape_request",
-        "action_results",
-    ],
-    (GRAPH_CV_SUBAGENT, NODE_EXTRACT_CV): [
-        "cv.documents",
-        "routing.plan.planned_stages",
-    ],
-    (GRAPH_CV_SUBAGENT, NODE_REVIEW_CV): [
-        "cv.documents",
-        "routing.targets.cv",
-        "routing.request.review",
-    ],
-    (GRAPH_CV_SUBAGENT, NODE_COMPARE_CVS): [
-        "cv.documents",
-        "routing.targets.cv",
-    ],
-    (GRAPH_JOB_SUBAGENT, NODE_SCRAPE_JOBS): [
-        "jobs.scrape_request",
-        "jobs.results",
-        "routing.plan.planned_stages",
-    ],
-    (GRAPH_JOB_SUBAGENT, NODE_EXTRACT_PASTED_JOB): [
-        "routing.request.job.input",
-        "jobs.results",
-    ],
-    (GRAPH_JOB_SUBAGENT, NODE_MATCH_JOBS): [
-        "cv.documents",
-        "jobs.results",
-        "routing.targets",
-    ],
-}
 
 # [Runtime request projection keys]
 REQUEST_VALUE_KEYS: frozenset[str] = frozenset(

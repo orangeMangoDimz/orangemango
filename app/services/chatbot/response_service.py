@@ -14,13 +14,8 @@ from app.config.const.chatbot_errors import (
 )
 from app.config.const.chatbot_prompts import CHAT_PROMPT, PRESENTATION_DATA_HEADER
 from app.models.chat_model import ChatModel
-from app.models.chatbot.state import ConversationState
-from app.repositories.chatbot.conversation_state_repository import (
-    ConversationStateRepository,
-)
-from app.services.chatbot.conversation_service import ConversationService
+from app.models.chatbot.state import FinalResponseState
 from app.services.chatbot.message_reader import MessageReader
-from app.services.chatbot.presentation_service import PresentationService
 
 
 class ResponseService:
@@ -29,15 +24,9 @@ class ResponseService:
     def __init__(
         self,
         *,
-        state: ConversationStateRepository,
-        presentation: PresentationService,
-        conversation: ConversationService,
         messages: MessageReader,
         chat_model: ChatModel,
     ) -> None:
-        self._state = state
-        self._presentation = presentation
-        self._conversation = conversation
         self._messages = messages
         self._chat_model = chat_model
 
@@ -47,10 +36,10 @@ class ResponseService:
 
     async def respond_node(
         self,
-        state: ConversationState,
+        state: FinalResponseState,
         config: RunnableConfig | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = self._presentation.presentation_payload(state)
+        payload: dict[str, Any] = dict(state)
         try:
             assistant: Any = self._chat_model.response()
             response_parts: list[str] = []
@@ -61,7 +50,6 @@ class ResponseService:
                         + PRESENTATION_DATA_HEADER
                         + json.dumps(payload, ensure_ascii=False)
                     ),
-                    *self._conversation.bounded_conversation(state),
                 ],
                 config=config,
             ):
@@ -73,23 +61,18 @@ class ResponseService:
             if not self.is_usable_model_response(response):
                 return {
                     "response": None,
-                    "errors": self._state.state_errors(
-                        state, [ERROR_RESPONSE_MODEL_EMPTY]
-                    ),
-                    "job_list": payload.get("job_list", []),
+                    "failure": ERROR_RESPONSE_MODEL_EMPTY,
+                    "job_list": [],
                 }
             result: AIMessage = AIMessage(content=response.strip())
             return {
                 "messages": [result],
                 "response": response.strip(),
-                "job_list": payload.get("job_list", []),
+                "job_list": [],
             }
         except Exception as exc:
             return {
                 "response": None,
-                "job_list": payload.get("job_list", []),
-                "errors": self._state.state_errors(
-                    state,
-                    [f"{ERROR_RESPONSE_MODEL_FAILED}{type(exc).__name__}"],
-                ),
+                "job_list": [],
+                "failure": f"{ERROR_RESPONSE_MODEL_FAILED}{type(exc).__name__}",
             }

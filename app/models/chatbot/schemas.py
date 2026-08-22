@@ -7,17 +7,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.config.const.chatbot import (
-    MAX_CONVERSATION_MEMORY_ITEMS,
-    MAX_CONVERSATION_SUMMARY_CHARS,
     MAX_CV_DOCUMENTS,
 )
 from app.models.chatbot.literals import (
+    CvAction,
     CvTargetScope,
     GoalName,
+    JobAction,
     JobResponse,
     JobSource,
     JobTargetScope,
     JobTask,
+    ParentTarget,
     ReviewMode,
     RoleSource,
     RouteName,
@@ -28,6 +29,62 @@ class ScrapeRequest(BaseModel):
     keywords: list[str] = Field(default_factory=list, max_length=5)
     sites: list[str] = Field(default_factory=list, max_length=5)
     max_age_hours: int | None = Field(default=None, ge=1, le=720)
+
+
+class PlanStep(BaseModel):
+    node: str = Field(min_length=1, max_length=80)
+    expected: str = Field(min_length=1, max_length=300)
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class ParentPlanStep(PlanStep):
+    node: ParentTarget
+
+
+class CvPlanStep(PlanStep):
+    node: CvAction
+
+
+class JobPlanStep(PlanStep):
+    node: JobAction
+
+
+class ParentIntent(BaseModel):
+    query: str = Field(min_length=1, max_length=12000)
+    goal: str = Field(min_length=1, max_length=300)
+    cv_ids: list[str] = Field(default_factory=list, max_length=MAX_CV_DOCUMENTS)
+    job_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ParentPlan(BaseModel):
+    """End-to-end high-level plan owned by the parent graph."""
+
+    intent: ParentIntent
+    plan: list[ParentPlanStep] = Field(min_length=1, max_length=3)
+
+
+class CvPlan(BaseModel):
+    """End-to-end CV-domain plan selected inside the CV subagent."""
+
+    plan: list[CvPlanStep] = Field(min_length=1, max_length=3)
+    cv_ids: list[str] = Field(default_factory=list, max_length=MAX_CV_DOCUMENTS)
+    review_mode: ReviewMode = "general"
+    review_focus: str | None = Field(default=None, max_length=200)
+    target_role: str | None = Field(default=None, max_length=160)
+
+
+class JobPlan(BaseModel):
+    """End-to-end job-domain plan selected inside the job subagent."""
+
+    plan: list[JobPlanStep] = Field(min_length=1, max_length=3)
+    source: JobSource = "none"
+    response: JobResponse = "none"
+    refresh: bool = False
+    cv_ids: list[str] = Field(default_factory=list, max_length=MAX_CV_DOCUMENTS)
+    job_ids: list[str] = Field(default_factory=list, max_length=20)
+    search: ScrapeRequest = Field(default_factory=ScrapeRequest)
+    pasted_content: str | None = None
+    show_score: bool = False
 
 
 class RouteDecision(BaseModel):
@@ -292,25 +349,3 @@ class CvComparisonResult(BaseModel):
     candidates: list[CvComparisonCandidate] = Field(min_length=2, max_length=5)
     skill_matrix: list[str] = Field(default_factory=list, max_length=12)
     recommendation: str = Field(min_length=1, max_length=800)
-
-
-class ConversationMemory(BaseModel):
-    """Durable conversational context; domain state remains authoritative."""
-
-    summary: str = Field(default="", max_length=MAX_CONVERSATION_SUMMARY_CHARS)
-    user_preferences: list[str] = Field(
-        default_factory=list,
-        max_length=MAX_CONVERSATION_MEMORY_ITEMS,
-    )
-    decisions: list[str] = Field(
-        default_factory=list,
-        max_length=MAX_CONVERSATION_MEMORY_ITEMS,
-    )
-    open_questions: list[str] = Field(
-        default_factory=list,
-        max_length=MAX_CONVERSATION_MEMORY_ITEMS,
-    )
-    references: list[str] = Field(
-        default_factory=list,
-        max_length=MAX_CONVERSATION_MEMORY_ITEMS,
-    )
