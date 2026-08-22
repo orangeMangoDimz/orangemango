@@ -39,19 +39,21 @@ class ScrapeResponseParser:
             ]
             if text_parts and len(text_parts) == len(raw):
                 return ScrapeResponseParser.decode_mcp_result("\n".join(text_parts))
-            return [
-                ScrapeResponseParser.decode_mcp_result(item) for item in raw
-            ]
+            return [ScrapeResponseParser.decode_mcp_result(item) for item in raw]
 
         if isinstance(raw, dict):
-            for key in ("structuredContent", "structured_content", "artifact", "result"):
+            for key in (
+                "structuredContent",
+                "structured_content",
+                "artifact",
+                "result",
+            ):
                 if key in raw and raw[key] is not None:
                     return ScrapeResponseParser.decode_mcp_result(raw[key])
             if isinstance(raw.get("text"), str) and len(raw) <= 2:
                 return ScrapeResponseParser.decode_mcp_result(raw["text"])
 
         return raw
-
 
     @staticmethod
     def extract_job_payloads(payload: Any) -> list[dict[str, Any]]:
@@ -72,7 +74,9 @@ class ScrapeResponseParser:
             if isinstance(value, list):
                 return ScrapeResponseParser.extract_job_payloads(value)
             if isinstance(value, dict):
-                nested: list[dict[str, Any]] = ScrapeResponseParser.extract_job_payloads(value)
+                nested: list[dict[str, Any]] = (
+                    ScrapeResponseParser.extract_job_payloads(value)
+                )
                 if nested:
                     return nested
 
@@ -80,7 +84,6 @@ class ScrapeResponseParser:
             return [payload]
 
         return []
-
 
     @staticmethod
     def _is_requirement_noise(line: str) -> bool:
@@ -98,9 +101,10 @@ class ScrapeResponseParser:
             "qualifications",
         }
 
-
     @staticmethod
-    def compact_job_card(job: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
+    def compact_job_card(
+        job: dict[str, Any], envelope: dict[str, Any]
+    ) -> dict[str, Any]:
         def first(*keys: str) -> Any:
             for key in keys:
                 if job.get(key) not in (None, "", []):
@@ -136,22 +140,29 @@ class ScrapeResponseParser:
             description = TextUtils.short_text(requirements[0], MAX_REQUIREMENT_CHARS)
 
         return {
-            "title": TextUtils.short_text(first("title", "raw_title", "job_title")) or JOB_CARD_UNTITLED,
-            "company": TextUtils.short_text(first("company", "company_name")) or JOB_CARD_UNKNOWN_COMPANY,
+            "title": TextUtils.short_text(first("title", "raw_title", "job_title"))
+            or JOB_CARD_UNTITLED,
+            "company": TextUtils.short_text(first("company", "company_name"))
+            or JOB_CARD_UNKNOWN_COMPANY,
             "location": TextUtils.short_text(first("location", "locations")),
             "url": TextUtils.short_text(first("url", "job_url", "link"), 1000),
             "salary": TextUtils.short_text(first("salary", "salary_range")),
-            "posted_date": TextUtils.short_text(first("posted_date", "date_posted"), 160),
+            "posted_date": TextUtils.short_text(
+                first("posted_date", "date_posted"), 160
+            ),
             "posted_at": TextUtils.short_text(first("posted_at"), 160),
             "work_type": TextUtils.short_text(first("work_type", "remote_type"), 80),
-            "employment_type": TextUtils.short_text(first("employment_type", "job_type"), 80),
-            "experience_level": TextUtils.short_text(first("experience_level", "seniority"), 80),
+            "employment_type": TextUtils.short_text(
+                first("employment_type", "job_type"), 80
+            ),
+            "experience_level": TextUtils.short_text(
+                first("experience_level", "seniority"), 80
+            ),
             "description": description,
             "requirements": requirements,
             "site": TextUtils.short_text(first("site") or envelope.get("site"), 80),
             "scrape_errors": TextUtils.short_list(envelope.get("errors"), 2, 200),
         }
-
 
     @staticmethod
     def compact_scrape_response(raw: Any) -> dict[str, Any]:
@@ -179,11 +190,12 @@ class ScrapeResponseParser:
             "errors": TextUtils.short_list(envelope.get("errors"), 5, 300),
         }
 
-
     @staticmethod
     def filter_scrape_args(tool: Any, request: dict[str, Any]) -> dict[str, Any]:
         args: dict[str, Any] = {
-            key: value for key, value in request.items() if value not in (None, "", [], {})
+            key: value
+            for key, value in request.items()
+            if value not in (None, "", [], {})
         }
         schema: Any = getattr(tool, "args_schema", None)
         allowed: set[str]

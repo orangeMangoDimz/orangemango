@@ -90,14 +90,13 @@ class IngestService:
             return updates
 
         if any(
-            isinstance(item, dict) and item.get("missing_bytes") for item in pending_uploads
+            isinstance(item, dict) and item.get("missing_bytes")
+            for item in pending_uploads
         ):
             return {
                 **updates,
                 "input_error": True,
-                "errors": [
-                    ERROR_CV_UPLOAD_PAYLOAD_MISSING
-                ],
+                "errors": [ERROR_CV_UPLOAD_PAYLOAD_MISSING],
             }
 
         existing_documents: list[dict[str, Any]] = self._cvs.state_cv_documents(state)
@@ -106,9 +105,7 @@ class IngestService:
             return {
                 **updates,
                 "input_error": True,
-                "errors": [
-                    f"{ERROR_CV_DOCUMENT_LIMIT_REACHED}{MAX_CV_DOCUMENTS}"
-                ],
+                "errors": [f"{ERROR_CV_DOCUMENT_LIMIT_REACHED}{MAX_CV_DOCUMENTS}"],
             }
 
         new_documents: list[dict[str, Any]] = []
@@ -122,7 +119,9 @@ class IngestService:
                     if isinstance(upload, dict)
                     else "cv.pdf"
                 )
-                errors.append(f"{ERROR_CV_UPLOAD_FAILED}{filename}:{type(exc).__name__}")
+                errors.append(
+                    f"{ERROR_CV_UPLOAD_FAILED}{filename}:{type(exc).__name__}"
+                )
 
         if not new_documents:
             return {

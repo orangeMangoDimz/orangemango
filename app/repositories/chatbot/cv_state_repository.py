@@ -26,8 +26,9 @@ class CvStateRepository:
             return [dict(item) for item in documents if isinstance(item, dict)]
         return []
 
-
-    def cv_needs_extraction_update(self, documents: list[dict[str, Any]]) -> dict[str, Any]:
+    def cv_needs_extraction_update(
+        self, documents: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         return {
             "cv": {
                 "needs_extraction": any(
@@ -36,7 +37,6 @@ class CvStateRepository:
                 )
             }
         }
-
 
     def cvs_need_extraction(self, state: ConversationState) -> bool:
         documents: list[dict[str, Any]] = self.state_cv_documents(state)
@@ -48,14 +48,12 @@ class CvStateRepository:
             )
         )
 
-
     def intent_requires_cv_features(self, state: ConversationState) -> bool:
         router: dict[str, Any] = self._state.router_bucket(state)
         route: RouteName = router.get("route") or "respond"
         if route in CV_FEATURE_INTENTS:
             return True
         return route == "respond" and bool(router.get("needs_cv_features"))
-
 
     def cv_feature_summary(self, features: dict[str, Any] | None) -> dict[str, Any]:
         features: dict[str, Any] = features or {}
@@ -71,7 +69,6 @@ class CvStateRepository:
             if features.get(key) not in (None, [], "")
         }
 
-
     def extracted_cv_documents(self, state: ConversationState) -> list[dict[str, Any]]:
         """Return uploaded CVs that have usable extracted features."""
         return [
@@ -83,7 +80,6 @@ class CvStateRepository:
     def resolve_selected_cv(self, state: ConversationState) -> dict[str, Any] | None:
         documents: list[dict[str, Any]] = self.resolve_selected_cvs(state)
         return documents[0] if documents else None
-
 
     def resolve_selected_cvs(self, state: ConversationState) -> list[dict[str, Any]]:
         documents: list[dict[str, Any]] = self.extracted_cv_documents(state)
@@ -100,7 +96,9 @@ class CvStateRepository:
                 if str(document.get("id") or "") in wanted
             ]
             return selected or documents
-        selected_id: str = str(self._state.selection_bucket(state).get("selected_cv_id") or "").strip()
+        selected_id: str = str(
+            self._state.selection_bucket(state).get("selected_cv_id") or ""
+        ).strip()
         if not selected_id:
             return documents
         selected: list[dict[str, Any]] = [
@@ -124,9 +122,13 @@ class CvStateRepository:
     def is_cv_upload_turn(self, state: ConversationState) -> bool:
         return PDF_UPLOAD_MARKER in self._state.last_user_text(state)
 
-    def unambiguous_extracted_cv(self, state: ConversationState) -> dict[str, Any] | None:
+    def unambiguous_extracted_cv(
+        self, state: ConversationState
+    ) -> dict[str, Any] | None:
         documents: list[dict[str, Any]] = self.extracted_cv_documents(state)
-        selected_id: str = str(self._state.selection_bucket(state).get("selected_cv_id") or "").strip()
+        selected_id: str = str(
+            self._state.selection_bucket(state).get("selected_cv_id") or ""
+        ).strip()
         if selected_id:
             matched: list[dict[str, Any]] = [
                 document

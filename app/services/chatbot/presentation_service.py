@@ -53,7 +53,6 @@ class PresentationService:
             return response
         return "none"
 
-
     def match_identity(self, item: dict[str, Any], index: int) -> str:
         key: str = str(item.get("job_key") or "").strip()
         if key:
@@ -63,13 +62,13 @@ class PresentationService:
         )
         return str(card.get("url") or f"match:{index}").strip()
 
-
     def search_role_label(self, state: ConversationState) -> str:
         goal: dict[str, Any] | None = self._jobs.active_job_goal(state)
         if goal is None:
             return ""
-        return ", ".join(TextUtils.display_role_constraints(list(goal.get("role_constraints") or [])))
-
+        return ", ".join(
+            TextUtils.display_role_constraints(list(goal.get("role_constraints") or []))
+        )
 
     def public_job_cards(self, state: ConversationState) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
@@ -84,8 +83,9 @@ class PresentationService:
                 jobs.append(slim)
         return jobs
 
-
-    def job_cards_for_current_request(self, state: ConversationState) -> list[dict[str, Any]]:
+    def job_cards_for_current_request(
+        self, state: ConversationState
+    ) -> list[dict[str, Any]]:
         response: JobResponse = self._state.request_job_response(state)
         if response != "list":
             return []
@@ -94,8 +94,8 @@ class PresentationService:
             return self.public_job_cards(state)
         return []
 
-
-    def public_assessment(self,
+    def public_assessment(
+        self,
         state: ConversationState,
         *,
         show_score: bool,
@@ -109,9 +109,13 @@ class PresentationService:
             if isinstance(item, dict)
         ]
         if response == "summary":
-            if not matches and ROUTE_MATCH_JOBS not in self._state.completed_actions(state):
+            if not matches and ROUTE_MATCH_JOBS not in self._state.completed_actions(
+                state
+            ):
                 return None
-            detail_level: Any = self._state.selection_bucket(state).get("match_detail_level")
+            detail_level: Any = self._state.selection_bucket(state).get(
+                "match_detail_level"
+            )
             if detail_level not in {"summary", "full"}:
                 detail_level = "summary"
             return self._matches.build_public_match_summary(
@@ -120,7 +124,9 @@ class PresentationService:
                 detail_level=detail_level,
             )
 
-        detail_level: Any = self._state.selection_bucket(state).get("match_detail_level")
+        detail_level: Any = self._state.selection_bucket(state).get(
+            "match_detail_level"
+        )
         if detail_level not in {"summary", "full"}:
             detail_level = "summary"
 
@@ -133,7 +139,9 @@ class PresentationService:
                 detail_level=detail_level,
             )
 
-        selected_keys: Any = self._state.selection_bucket(state).get("selected_job_keys")
+        selected_keys: Any = self._state.selection_bucket(state).get(
+            "selected_job_keys"
+        )
         wanted: list[str] = [
             str(key).strip() for key in (selected_keys or []) if str(key).strip()
         ]
@@ -152,7 +160,6 @@ class PresentationService:
             show_score=show_score,
             detail_level=detail_level,
         )
-
 
     def public_review_payload(self, state: ConversationState) -> dict[str, Any] | None:
         review: Any = self._state.cv_bucket(state).get("review")
@@ -176,14 +183,14 @@ class PresentationService:
             payload["score_scale"] = REVIEW_SCORE_SCALE
         return payload
 
-
-    def public_comparison_payload(self, state: ConversationState) -> dict[str, Any] | None:
+    def public_comparison_payload(
+        self, state: ConversationState
+    ) -> dict[str, Any] | None:
         return self._projection.slim_comparison_result(
             self._state.cv_bucket(state).get("comparison")
             if isinstance(self._state.cv_bucket(state).get("comparison"), dict)
             else None
         )
-
 
     def public_extracted_job(self, state: ConversationState) -> dict[str, Any] | None:
         route: Any = self._state.router_bucket(state).get("route")
@@ -192,7 +199,9 @@ class PresentationService:
         results: list[dict[str, Any]] = self._jobs.job_results_for_display(state)
         if not results:
             return None
-        selected_keys: Any = self._state.selection_bucket(state).get("selected_job_keys")
+        selected_keys: Any = self._state.selection_bucket(state).get(
+            "selected_job_keys"
+        )
         if route == ROUTE_RESPOND and len(results) > 1 and not selected_keys:
             return None
         latest: dict[str, Any] = results[-1]
@@ -234,8 +243,9 @@ class PresentationService:
                 payload[public_key] = names[:12]
         return payload or None
 
-
-    def performed_actions_payload(self, state: ConversationState) -> list[dict[str, Any]]:
+    def performed_actions_payload(
+        self, state: ConversationState
+    ) -> list[dict[str, Any]]:
         performed: list[dict[str, Any]] = []
         for step in self._state.execution_steps(state):
             destination: Any = step.get("to")
@@ -254,7 +264,6 @@ class PresentationService:
                 item["error"] = step["error"]
             performed.append(item)
         return performed
-
 
     def presentation_payload(self, state: ConversationState) -> dict[str, Any]:
         router: dict[str, Any] = self._state.router_bucket(state)
@@ -277,7 +286,9 @@ class PresentationService:
         role: str = self.search_role_label(state)
         if not role:
             role = ", ".join(
-                TextUtils.display_role_constraints(list(request.get("role_constraints") or []))
+                TextUtils.display_role_constraints(
+                    list(request.get("role_constraints") or [])
+                )
             )
         if role:
             payload["role"] = role
@@ -290,12 +301,16 @@ class PresentationService:
             if not self._jobs.job_results_for_display(state):
                 missing_prerequisites.append("jobs")
         if jobs or missing_prerequisites:
-            payload["available_job_count"] = len(self._jobs.job_results_for_display(state))
+            payload["available_job_count"] = len(
+                self._jobs.job_results_for_display(state)
+            )
         if jobs and self._state.jobs_bucket(state).get("scrape_truncated"):
             payload["more_jobs_may_exist"] = True
         if missing_prerequisites:
             payload["missing_prerequisites"] = missing_prerequisites
-        assessment: dict[str, Any] | None = self.public_assessment(state, show_score=show_score)
+        assessment: dict[str, Any] | None = self.public_assessment(
+            state, show_score=show_score
+        )
         if assessment is not None:
             payload["assessment"] = assessment
         review: dict[str, Any] | None = self.public_review_payload(state)
@@ -334,7 +349,9 @@ class PresentationService:
                 for document in self._cvs.state_cv_documents(state)
                 if str(document.get("cv_text") or "").strip()
             ]
-            selected_document: dict[str, Any] | None = self._cvs.resolve_selected_cv(state)
+            selected_document: dict[str, Any] | None = self._cvs.resolve_selected_cv(
+                state
+            )
             selected_text: str = (
                 str(selected_document.get("cv_text") or "").strip()
                 if isinstance(selected_document, dict)
@@ -351,7 +368,9 @@ class PresentationService:
                 payload["cv_texts"] = [
                     {
                         "filename": str(document.get("filename") or "cv.pdf"),
-                        "text": TextUtils.short_text(document.get("cv_text") or "", 3000),
+                        "text": TextUtils.short_text(
+                            document.get("cv_text") or "", 3000
+                        ),
                     }
                     for document in documents_with_text
                 ]

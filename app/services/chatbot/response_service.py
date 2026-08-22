@@ -73,7 +73,9 @@ class ResponseService:
             if not self.is_usable_model_response(response):
                 return {
                     "response": None,
-                    "errors": self._state.state_errors(state, [ERROR_RESPONSE_MODEL_EMPTY]),
+                    "errors": self._state.state_errors(
+                        state, [ERROR_RESPONSE_MODEL_EMPTY]
+                    ),
                     "job_list": payload.get("job_list", []),
                 }
             result: AIMessage = AIMessage(content=response.strip())

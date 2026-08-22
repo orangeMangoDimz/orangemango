@@ -47,7 +47,9 @@ class ResultProjectionService:
         self._jobs = jobs
         self._subgraphs = subgraphs
 
-    def slim_review_result(self, review: dict[str, Any] | None) -> dict[str, Any] | None:
+    def slim_review_result(
+        self, review: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
         if not isinstance(review, dict):
             return None
         feedback: list[dict[str, Any]] = []
@@ -70,8 +72,9 @@ class ResultProjectionService:
             "feedback": feedback,
         }
 
-
-    def slim_comparison_result(self, comparison: dict[str, Any] | None) -> dict[str, Any] | None:
+    def slim_comparison_result(
+        self, comparison: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
         if not isinstance(comparison, dict):
             return None
         candidates: list[dict[str, Any]] = []
@@ -92,8 +95,8 @@ class ResultProjectionService:
             "recommendation": comparison.get("recommendation"),
         }
 
-
-    def slim_job_card(self,
+    def slim_job_card(
+        self,
         card: dict[str, Any] | None,
         *,
         include_description: bool = True,
@@ -116,14 +119,15 @@ class ResultProjectionService:
             if card.get(key) is not None and card.get(key) != "" and card.get(key) != []
         }
 
-
-    def slim_search_result(self,
-        jobs_update: dict[str, Any], state: ConversationState
+    def slim_search_result(
+        self, jobs_update: dict[str, Any], state: ConversationState
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = [
             item
             for item in (
-                jobs_update.get("results") or self._state.jobs_bucket(state).get("results") or []
+                jobs_update.get("results")
+                or self._state.jobs_bucket(state).get("results")
+                or []
             )
             if isinstance(item, dict)
         ]
@@ -131,7 +135,9 @@ class ResultProjectionService:
         if not isinstance(active_keys, list) or not active_keys:
             active_keys = self._state.jobs_bucket(state).get("active_job_keys")
         if isinstance(active_keys, list) and active_keys:
-            wanted: set[str] = {str(key).strip() for key in active_keys if str(key).strip()}
+            wanted: set[str] = {
+                str(key).strip() for key in active_keys if str(key).strip()
+            }
             results = [
                 item
                 for index, item in enumerate(results)
@@ -139,7 +145,9 @@ class ResultProjectionService:
             ]
         jobs: list[dict[str, Any]] = []
         for item in results:
-            raw_card: Any = item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+            raw_card: Any = (
+                item.get("job_card") if isinstance(item.get("job_card"), dict) else None
+            )
             card: dict[str, Any] = {
                 field: raw_card.get(field)
                 for field in ("title", "location", "posted_date", "salary", "url")
@@ -162,14 +170,18 @@ class ResultProjectionService:
             "jobs": jobs,
         }
 
-
-    def slim_match_result(self,
+    def slim_match_result(
+        self,
         jobs_update: dict[str, Any],
         *,
         show_score: bool = True,
     ) -> dict[str, Any]:
         assessment: dict[str, Any] = self.build_match_assessment(
-            [item for item in (jobs_update.get("matches") or []) if isinstance(item, dict)],
+            [
+                item
+                for item in (jobs_update.get("matches") or [])
+                if isinstance(item, dict)
+            ],
             show_score=show_score,
         )
         return {
@@ -178,8 +190,8 @@ class ResultProjectionService:
             "matches": assessment["matches"],
         }
 
-
-    def project_match_item(self,
+    def project_match_item(
+        self,
         item: dict[str, Any],
         *,
         show_score: bool = True,
@@ -222,8 +234,8 @@ class ResultProjectionService:
             projected["score"] = normalized
         return projected
 
-
-    def build_match_assessment(self,
+    def build_match_assessment(
+        self,
         matches: list[dict[str, Any]],
         *,
         show_score: bool = True,
@@ -235,7 +247,9 @@ class ResultProjectionService:
         for item in matches:
             if not isinstance(item, dict):
                 continue
-            row: dict[str, Any] | None = self.project_match_item(item, show_score=show_score)
+            row: dict[str, Any] | None = self.project_match_item(
+                item, show_score=show_score
+            )
             if row is None:
                 continue
             projected.append(row)
@@ -270,13 +284,15 @@ class ResultProjectionService:
             "matches": projected,
         }
 
-
-    def slim_extract_job_result(self,
+    def slim_extract_job_result(
+        self,
         jobs_update: dict[str, Any],
         state: ConversationState,
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = [
-            item for item in (jobs_update.get("results") or []) if isinstance(item, dict)
+            item
+            for item in (jobs_update.get("results") or [])
+            if isinstance(item, dict)
         ]
         if not results:
             results = [
@@ -289,12 +305,14 @@ class ResultProjectionService:
             "job_count": len(results),
             "validation_status": latest.get("validation_status"),
             "job": self.slim_job_card(
-                latest.get("job_card") if isinstance(latest.get("job_card"), dict) else None
+                latest.get("job_card")
+                if isinstance(latest.get("job_card"), dict)
+                else None
             ),
         }
 
-
-    def slim_action_result(self,
+    def slim_action_result(
+        self,
         action: AgentAction,
         update: dict[str, Any],
         state: ConversationState,
@@ -378,8 +396,8 @@ class ResultProjectionService:
             }
         return None
 
-
-    def build_action_result_messages(self,
+    def build_action_result_messages(
+        self,
         action: AgentAction,
         payload: dict[str, Any],
     ) -> list[AnyMessage]:
@@ -411,7 +429,9 @@ class ResultProjectionService:
         return {
             "matching_features": result.get("matching_features"),
             "validation_status": result.get("validation_status"),
-            "validation_errors": TextUtils.short_list(result.get("validation_errors"), 5, 300),
+            "validation_errors": TextUtils.short_list(
+                result.get("validation_errors"), 5, 300
+            ),
             "warnings": TextUtils.short_list(result.get("warnings"), 8, 300),
             "confirmation_required": TextUtils.short_list(
                 result.get("confirmation_required"),
@@ -420,8 +440,9 @@ class ResultProjectionService:
             ),
         }
 
-
-    def compact_job_result(self, card: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    def compact_job_result(
+        self, card: dict[str, Any], result: dict[str, Any]
+    ) -> dict[str, Any]:
         extract: dict[str, Any] = result.get("extract") or {}
         enriched_card: dict[str, Any] = dict(card)
         if not enriched_card.get("title"):
@@ -440,6 +461,8 @@ class ResultProjectionService:
             "job_card": enriched_card,
             "matching_features": result.get("matching_features"),
             "validation_status": result.get("validation_status"),
-            "validation_errors": TextUtils.short_list(result.get("validation_errors"), 5, 300),
+            "validation_errors": TextUtils.short_list(
+                result.get("validation_errors"), 5, 300
+            ),
             "warnings": TextUtils.short_list(result.get("warnings"), 8, 300),
         }

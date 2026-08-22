@@ -65,7 +65,8 @@ class RequestRoutingService:
         self._conversation = conversation
         self._chat_model = chat_model
 
-    def normalize_job_role_fields(self,
+    def normalize_job_role_fields(
+        self,
         latest: str,
         *,
         job_task: str,
@@ -85,11 +86,12 @@ class RequestRoutingService:
         if not constraints:
             constraints = keywords
         if not evidence:
-            evidence = TextUtils.first_contiguous_phrase(latest, keywords or constraints) or ""
+            evidence = (
+                TextUtils.first_contiguous_phrase(latest, keywords or constraints) or ""
+            )
         if source == "none" and evidence:
             source = "explicit"
         return constraints, evidence or None, source
-
 
     def role_constraints_from_cv(self, document: dict[str, Any] | None) -> list[str]:
         if not isinstance(document, dict):
@@ -98,7 +100,6 @@ class RequestRoutingService:
         if not isinstance(features, dict):
             return []
         return TextUtils.normalize_role_constraints(features.get("role_tags") or [])
-
 
     def normalize_role_candidates(self, values: Any) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -145,8 +146,8 @@ class RequestRoutingService:
             "matches": catalogs["matches"],
         }
 
-
-    def mapped_job_request(self,
+    def mapped_job_request(
+        self,
         decision: RequestDecision,
     ) -> tuple[JobTask, JobResponse, JobSource, bool]:
         """Normalize the router's mapped job contract."""
@@ -283,7 +284,9 @@ class RequestRoutingService:
             mapped_job_source,
             mapped_job_refresh,
         ) = self.mapped_job_request(decision)
-        mapped_job_refresh = bool(mapped_job_refresh and self._jobs.active_job_goal(state))
+        mapped_job_refresh = bool(
+            mapped_job_refresh and self._jobs.active_job_goal(state)
+        )
         catalogs: dict[str, Any] = self._catalogs.routing_catalogs(state)
         selected_cv_ids: list[str] = []
         invalid_cv_ids: list[str] = []
@@ -326,17 +329,11 @@ class RequestRoutingService:
             "job_source": (
                 "pasted" if decision.job.task == "extract" else mapped_job_source
             ),
-            "job_input_text": (
-                latest if mapped_job_source == "pasted" else None
-            ),
+            "job_input_text": (latest if mapped_job_source == "pasted" else None),
             "scrape_request": decision.job.scrape.model_dump(exclude_none=True),
             "show_score": bool(decision.score_requested),
-            "refresh_requested": bool(
-                mapped_job_refresh
-            ),
-            "role_candidates": [
-                item.model_dump() for item in decision.role_candidates
-            ],
+            "refresh_requested": bool(mapped_job_refresh),
+            "role_candidates": [item.model_dump() for item in decision.role_candidates],
         }
         request: dict[str, Any] = self._state.request_state_fields(request_input)
         request_values_view: dict[str, Any] = self._state.request_values(request)
@@ -346,7 +343,9 @@ class RequestRoutingService:
             role_constraints=request_values_view.get("role_constraints"),
             role_evidence=request_values_view.get("role_evidence"),
             role_source=request_values_view.get("role_source"),
-            scrape_keywords=request_values_view.get("scrape_request", {}).get("keywords")
+            scrape_keywords=request_values_view.get("scrape_request", {}).get(
+                "keywords"
+            )
             if isinstance(request_values_view.get("scrape_request"), dict)
             else [],
         )
@@ -367,7 +366,6 @@ class RequestRoutingService:
             }
         )
         return {"routing": {"request": request, "targets": targets}}
-
 
     async def workflow_planner_node(self, state: ConversationState) -> dict[str, Any]:
         try:
@@ -407,7 +405,9 @@ class RequestRoutingService:
             and ROUTE_SEARCH_JOBS in self._state.completed_actions(state)
             and not request.get("refresh_requested")
         ):
-            if request.get("assessment_requested") and self._state.jobs_bucket(state).get("results"):
+            if request.get("assessment_requested") and self._state.jobs_bucket(
+                state
+            ).get("results"):
                 plan = WorkflowPlan(
                     action=ROUTE_MATCH_JOBS,
                     reason=REASON_SEARCH_COMPLETE_ASSESSMENT,

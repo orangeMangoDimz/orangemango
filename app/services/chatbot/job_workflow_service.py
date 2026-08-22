@@ -50,7 +50,8 @@ class JobWorkflowService:
         self._subgraphs = subgraphs
         self._projection = projection
 
-    def scrape_payload_from_card(self,
+    def scrape_payload_from_card(
+        self,
         card: dict[str, Any],
         request: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -63,7 +64,6 @@ class JobWorkflowService:
             "errors": [],
         }
 
-
     async def scrape_jobs_with_mcp(self, state: ConversationState) -> dict[str, Any]:
         existing_results: list[dict[str, Any]] = [
             item
@@ -72,8 +72,12 @@ class JobWorkflowService:
         ]
         try:
             tool: Any = await self._scraper.scrape_jobs_tool()
-            request: dict[str, Any] = dict(self._state.jobs_bucket(state).get("scrape_request") or {})
-            raw: Any = await tool.ainvoke(self._parser.filter_scrape_args(tool, request))
+            request: dict[str, Any] = dict(
+                self._state.jobs_bucket(state).get("scrape_request") or {}
+            )
+            raw: Any = await tool.ainvoke(
+                self._parser.filter_scrape_args(tool, request)
+            )
             compact: dict[str, Any] = self._parser.compact_scrape_response(raw)
             job_results: list[dict[str, Any]]
             extraction_errors: list[str]
@@ -84,7 +88,9 @@ class JobWorkflowService:
                 "jobs": {
                     "scrape_total": compact["total"],
                     "scrape_truncated": compact["truncated"],
-                    "results": JobKeyUtils.merge_job_results(existing_results, job_results),
+                    "results": JobKeyUtils.merge_job_results(
+                        existing_results, job_results
+                    ),
                     "active_job_keys": [
                         JobKeyUtils.job_selection_key(item, index)
                         for index, item in enumerate(job_results)
@@ -110,8 +116,8 @@ class JobWorkflowService:
                 ),
             }
 
-
-    async def run_one_job_agent(self,
+    async def run_one_job_agent(
+        self,
         card: dict[str, Any],
         request: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -128,7 +134,6 @@ class JobWorkflowService:
                 "validation_errors": [f"{type(exc).__name__}: {exc}"],
                 "warnings": [],
             }
-
 
     def pasted_job_card(self, text: str) -> dict[str, Any]:
         return {
@@ -148,9 +153,10 @@ class JobWorkflowService:
             "scrape_errors": [],
         }
 
-
     async def extract_pasted_job(self, state: ConversationState) -> dict[str, Any]:
-        text: str = (self._state.selection_bucket(state).get("job_input_text") or "").strip()
+        text: str = (
+            self._state.selection_bucket(state).get("job_input_text") or ""
+        ).strip()
         existing_results: list[dict[str, Any]] = [
             item
             for item in (self._state.jobs_bucket(state).get("results") or [])
@@ -176,7 +182,9 @@ class JobWorkflowService:
         return {
             "jobs": {
                 "scrape_total": self._state.jobs_bucket(state).get("scrape_total", 0),
-                "scrape_truncated": self._state.jobs_bucket(state).get("scrape_truncated", False),
+                "scrape_truncated": self._state.jobs_bucket(state).get(
+                    "scrape_truncated", False
+                ),
                 "results": JobKeyUtils.merge_job_results(existing_results, [result]),
                 "active_job_keys": [JobKeyUtils.job_selection_key(result, 0)],
                 "matches": [],
@@ -184,13 +192,15 @@ class JobWorkflowService:
             "errors": self._state.state_errors(state, errors),
         }
 
-
-    async def extract_job_cards(self,
+    async def extract_job_cards(
+        self,
         cards: list[dict[str, Any]],
         request: dict[str, Any] | None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         results: list[dict[str, Any]] = list(
-            await asyncio.gather(*(self.run_one_job_agent(card, request) for card in cards))
+            await asyncio.gather(
+                *(self.run_one_job_agent(card, request) for card in cards)
+            )
         )
         errors: list[str] = [
             f"{ERROR_JOB_EXTRACTION_FAILED}{item['job_card'].get('title', 'job')}"
@@ -199,13 +209,13 @@ class JobWorkflowService:
         ]
         return results, errors
 
-
     async def calculate_job_matches(self, state: ConversationState) -> dict[str, Any]:
         selected_cvs: list[dict[str, Any]] = self._cvs.resolve_selected_cvs(state)
         usable_cvs: list[dict[str, Any]] = [
             document
             for document in selected_cvs
-            if isinstance(document.get("cv_result"), dict) and document.get("cv_features")
+            if isinstance(document.get("cv_result"), dict)
+            and document.get("cv_features")
         ]
         if not usable_cvs:
             return {
@@ -241,7 +251,9 @@ class JobWorkflowService:
             for item in selected_jobs:
                 job_title: str = str(item["job_card"].get("title") or "job")
                 try:
-                    result: dict[str, Any] = await self._subgraphs.matching_score.ainvoke(
+                    result: dict[
+                        str, Any
+                    ] = await self._subgraphs.matching_score.ainvoke(
                         {"cv_result": cv_result, "job_result": item}
                     )
                     score: Any = result.get("score")

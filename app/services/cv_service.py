@@ -246,15 +246,15 @@ class CvService:
         thread_id: str,
     ) -> dict[str, Any] | None:
         """Load the persisted CV context that should be active for a chat thread."""
-        extraction: CvExtraction | None = (
-            await self._repository.get_latest_valid_extraction_for_thread(
-            thread_id
-            )
-        )
+        extraction: (
+            CvExtraction | None
+        ) = await self._repository.get_latest_valid_extraction_for_thread(thread_id)
         if extraction is None:
             return None
 
-        document: CvDocument = await self._repository.get_document(extraction.document_id)
+        document: CvDocument = await self._repository.get_document(
+            extraction.document_id
+        )
         cv_text: str = validate_extracted_text(document.extracted_text)
         cv_result: dict[str, Any] = _result_without_source_text(
             extraction.extraction_result
