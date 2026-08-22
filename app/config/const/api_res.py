@@ -1,7 +1,9 @@
+from app.config.const.api_path import EVENTS_PATH
+
 # [Chat Endpoint]
 CHAT_ENDPOINT_DESCRIPTION = (
     "Accepts a validated message and starts a LangGraph response run for the "
-    "specified thread. Generated events are available from GET /events."
+    f"specified thread. Generated events are available from GET {EVENTS_PATH}."
 )
 
 # [API Authentication]

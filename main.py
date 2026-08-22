@@ -35,6 +35,15 @@ from app.config.const.api_res import (
     OPENAPI_TAGS,
     THREAD_ID_MUST_NOT_BE_BLANK,
 )
+from app.config.const.api_path import (
+    CV_EXTRACT_PATH,
+    CV_EXTRACT_TEXT_PATH,
+    CV_EXTRACTIONS_PATH,
+    CV_PATH,
+    EVENTS_PATH,
+    HEALTH_PATH,
+    MESSAGE_PATH,
+)
 from app.config.const.chat import MAX_CV_FILE_BYTES, MAX_THREAD_ID_LENGTH
 from app.data.schema.request import CvExtractionRequest, MessageRequest
 from app.data.schema.response import (
@@ -72,6 +81,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    status,
     UploadFile,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -110,10 +120,10 @@ async def unhandled_exception_handler(
         "Unhandled API exception",
         exc=exc,
         request=request,
-        status_code=500,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
     return JSONResponse(
-        status_code=500,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "Internal server error"},
     )
 
@@ -125,7 +135,7 @@ def get_chat_service() -> ChatService:
             _chat_service = ChatService.from_env()
         except (ChatConfigurationError, DatabaseConfigurationError) as exc:
             raise HTTPException(
-                status_code=503,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=CHAT_SERVICE_NOT_CONFIGURED,
             ) from exc
     return _chat_service
@@ -138,7 +148,10 @@ def get_cv_service() -> CvService:
 def _normalize_thread_id(thread_id: str) -> str:
     normalized = thread_id.strip()
     if not normalized:
-        raise HTTPException(status_code=422, detail=THREAD_ID_MUST_NOT_BE_BLANK)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=THREAD_ID_MUST_NOT_BE_BLANK,
+        )
     return normalized
 
 
@@ -165,7 +178,7 @@ async def _format_sse(events: AsyncIterator[object]) -> AsyncIterator[str]:
 
 
 @app.get(
-    "/healthz",
+    HEALTH_PATH,
     response_model=HealthResponse,
     summary=HEALTH_ENDPOINT_SUMMARY,
     description=HEALTH_ENDPOINT_DESCRIPTION,
@@ -176,9 +189,9 @@ async def healthz() -> HealthResponse:
 
 
 @app.post(
-    "/message",
+    MESSAGE_PATH,
     response_model=AcceptedMessageResponse,
-    status_code=202,
+    status_code=status.HTTP_202_ACCEPTED,
     summary=CHAT_ENDPOINT_SUMMARY,
     description=CHAT_ENDPOINT_DESCRIPTION,
     tags=[CHAT_API_TAG],
@@ -191,18 +204,21 @@ async def message(
     try:
         return await service.accept_message(request.thread_id, request.message)
     except ChatThreadBusyError as exc:
-        raise HTTPException(status_code=409, detail=CHAT_THREAD_BUSY) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=CHAT_THREAD_BUSY,
+        ) from exc
     except ChatPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
 
 
 @app.post(
-    "/cv",
+    CV_PATH,
     response_model=CvUploadResponse,
-    status_code=201,
+    status_code=status.HTTP_201_CREATED,
     summary=CV_UPLOAD_SUMMARY,
     description=CV_UPLOAD_DESCRIPTION,
     tags=[CV_API_TAG],
@@ -221,12 +237,12 @@ async def cv(
         )
     except CvInputError as exc:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc) or CV_FILE_INVALID,
         ) from exc
     except CvPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
     finally:
@@ -234,7 +250,7 @@ async def cv(
 
 
 @app.post(
-    "/cv/{cv_id}/extract-text",
+    CV_EXTRACT_TEXT_PATH,
     response_model=CvProcessResponse,
     summary=CV_TEXT_EXTRACTION_SUMMARY,
     description=CV_TEXT_EXTRACTION_DESCRIPTION,
@@ -248,23 +264,32 @@ async def cv_extract_text(
     try:
         await service.process_cv(cv_id)
     except CvNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=CV_NOT_FOUND) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CV_NOT_FOUND,
+        ) from exc
     except CvInputError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except CvExtractionBusyError as exc:
-        raise HTTPException(status_code=409, detail=CV_EXTRACTION_BUSY) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=CV_EXTRACTION_BUSY,
+        ) from exc
     except CvPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
     return CvProcessResponse(status="ok")
 
 
 @app.post(
-    "/cv/{cv_id}/extract",
+    CV_EXTRACT_PATH,
     response_model=AcceptedCvExtractionResponse,
-    status_code=202,
+    status_code=status.HTTP_202_ACCEPTED,
     summary=CV_EXTRACTION_SUMMARY,
     description=CV_EXTRACTION_DESCRIPTION,
     tags=[CV_API_TAG],
@@ -281,18 +306,24 @@ async def cv_extract(
             thread_id=request.thread_id,
         )
     except CvNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=CV_NOT_FOUND) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CV_NOT_FOUND,
+        ) from exc
     except CvThreadBusyError as exc:
-        raise HTTPException(status_code=409, detail=CV_EXTRACTION_BUSY) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=CV_EXTRACTION_BUSY,
+        ) from exc
     except CvPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
 
 
 @app.get(
-    "/cv/extractions/{extraction_id}",
+    CV_EXTRACTIONS_PATH,
     response_model=CvExtractionResponse,
     summary=CV_EXTRACTION_RESULT_SUMMARY,
     description=CV_EXTRACTION_RESULT_DESCRIPTION,
@@ -307,18 +338,18 @@ async def cv_extractions(
         return await service.get_extraction(extraction_id)
     except CvExtractionNotFoundError as exc:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=CV_EXTRACTION_NOT_FOUND,
         ) from exc
     except CvPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
 
 
 @app.get(
-    "/events",
+    EVENTS_PATH,
     response_class=StreamingResponse,
     summary=EVENT_ENDPOINT_SUMMARY,
     description=EVENT_ENDPOINT_DESCRIPTION,
@@ -334,10 +365,13 @@ async def events(
     try:
         await service.ensure_thread(normalized_thread_id)
     except ChatThreadNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=CHAT_THREAD_NOT_FOUND) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CHAT_THREAD_NOT_FOUND,
+        ) from exc
     except ChatPersistenceError as exc:
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=CHAT_SERVICE_NOT_CONFIGURED,
         ) from exc
 
